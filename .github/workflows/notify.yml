@@ -1,0 +1,33 @@
+name: Calendar LINE Notification
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 00:00 UTC = 08:00 台北時間
+  workflow_dispatch:       # 允許手動觸發（測試用）
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write Google token
+        run: echo '${{ secrets.GOOGLE_TOKEN_JSON }}' > token.json
+
+      - name: Send notification
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          TIMEZONE: Asia/Taipei
+          ENABLE_TOMORROW_PREVIEW: 'true'
+        run: python main.py test
