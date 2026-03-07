@@ -23,7 +23,7 @@ jobs:
 
       - name: Write Google token
         env:
-          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          GOOGLE_TOKEN_JSON_B64: ${{ secrets.GOOGLE_TOKEN_JSON_B64 }}
         run: python write_token.py
 
       - name: Send notification
