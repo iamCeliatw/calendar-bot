@@ -23,14 +23,20 @@ def notify():
 
     print(f"[{now.strftime('%Y-%m-%d %H:%M')}] 開始讀取行程...")
 
-    # 今日通知
+    # 今日通知（有行程才發）
     today_events = calendar_service.get_events(today, TIMEZONE)
-    line_service.send_today_notification(today_events, today)
+    if today_events:
+        line_service.send_today_notification(today_events, today)
+    else:
+        print("今日無行程，跳過通知")
 
-    # 明日預告
+    # 明日預告（有行程才發）
     if ENABLE_TOMORROW:
         tomorrow_events = calendar_service.get_events(tomorrow, TIMEZONE)
-        line_service.send_tomorrow_notification(tomorrow_events, tomorrow)
+        if tomorrow_events:
+            line_service.send_tomorrow_notification(tomorrow_events, tomorrow)
+        else:
+            print("明日無行程，跳過預告")
 
 
 def run_scheduler():

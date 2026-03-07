@@ -46,16 +46,17 @@ def send_tomorrow_notification(events: list[dict], date: datetime):
 
 def _send(label: str, events: list[dict]):
     token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"].strip()
-    user_id = os.environ["LINE_USER_ID"]
+    user_ids = [uid.strip() for uid in os.environ["LINE_USER_IDS"].split(",")]
 
     config = Configuration(access_token=token)
     with ApiClient(config) as client:
         api = MessagingApi(client)
         message = _build_message(events, label)
-        api.push_message(
-            PushMessageRequest(
-                to=user_id,
-                messages=[TextMessage(type="text", text=message)],
+        for user_id in user_ids:
+            api.push_message(
+                PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(type="text", text=message)],
+                )
             )
-        )
-    print(f"[LINE] 已發送：{label}")
+    print(f"[LINE] 已發送：{label}（{len(user_ids)} 人）")
