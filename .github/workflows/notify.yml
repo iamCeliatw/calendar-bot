@@ -21,19 +21,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write and verify Google token
+      - name: Write Google token
         env:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: |
-          python -c "
-import os
-v = os.environ.get('GOOGLE_TOKEN_JSON', '')
-print(f'Secret length: {len(v)}')
-open('token.json', 'w').write(v)
-import json
-json.load(open('token.json'))
-print('token.json OK')
-"
+        run: python write_token.py
 
       - name: Send notification
         env:
