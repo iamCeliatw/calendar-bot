@@ -45,7 +45,7 @@ def send_tomorrow_notification(events: list[dict], date: datetime):
 
 
 def _send(label: str, events: list[dict]):
-    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"].strip()
     user_id = os.environ["LINE_USER_ID"]
 
     config = Configuration(access_token=token)
