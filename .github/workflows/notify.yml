@@ -22,7 +22,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Write Google token
-        run: echo '${{ secrets.GOOGLE_TOKEN_JSON }}' > token.json
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: echo "$GOOGLE_TOKEN_JSON" > token.json
 
       - name: Send notification
         env:
