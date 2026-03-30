@@ -1,29 +1,76 @@
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+# 讀取行程 + 建立／修改事件
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+# 本機預設 token.json；Cloud Run 可設為 Secret 掛載路徑，例如 /secrets/token.json
+TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
+
+
+def _allow_browser_oauth() -> bool:
+    """Cloud Run 會設定 K_SERVICE，不應開本機瀏覽器授權。"""
+    if os.environ.get("ALLOW_BROWSER_OAUTH", "").lower() in ("0", "false", "no"):
+        return False
+    return not bool(os.environ.get("K_SERVICE"))
+
+
+def _persist_token(creds_json: str) -> None:
+    """掛載唯讀 Secret 時略過寫入；程序內 refresh 仍有效。"""
+    try:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+            token.write(creds_json)
+    except OSError:
+        pass
+
+
+def _has_required_scopes(creds: Credentials) -> bool:
+    """舊 token 可能仍是 calendar.readonly，刷新會出現 invalid_scope，須重新授權。"""
+    if not creds.scopes:
+        return False
+    granted = set(creds.scopes)
+    return all(s in granted for s in SCOPES)
+
+
+def _run_oauth_flow() -> Credentials:
+    flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+    return flow.run_local_server(port=0)
 
 
 def get_credentials():
     """取得或刷新 Google OAuth 憑證"""
     creds = None
 
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if not _has_required_scopes(creds):
+            creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                creds = None
+                if os.path.exists(TOKEN_FILE):
+                    try:
+                        os.remove(TOKEN_FILE)
+                    except OSError:
+                        pass
+        if not creds or not creds.valid:
+            if not _allow_browser_oauth():
+                raise RuntimeError(
+                    "請在 Cloud Run 掛載已授權的 Google token，並設定環境變數 "
+                    "GOOGLE_TOKEN_PATH 為該檔案路徑（例如 /secrets/token.json）。"
+                )
+            creds = _run_oauth_flow()
+        _persist_token(creds.to_json())
 
     return creds
 
@@ -77,3 +124,25 @@ def _parse_event(event: dict, tz: ZoneInfo) -> dict:
         "location": event.get("location", ""),
         "description": event.get("description", ""),
     }
+
+
+def create_timed_event(
+    summary: str,
+    start: datetime,
+    end: datetime,
+    timezone_str: str = "Asia/Taipei",
+) -> dict:
+    """在 primary 日曆建立有起訖時間的事件，回傳 API 回應 body。"""
+    creds = get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+    tz = ZoneInfo(timezone_str)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=tz)
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start.isoformat(), "timeZone": timezone_str},
+        "end": {"dateTime": end.isoformat(), "timeZone": timezone_str},
+    }
+    return service.events().insert(calendarId="primary", body=body).execute()
