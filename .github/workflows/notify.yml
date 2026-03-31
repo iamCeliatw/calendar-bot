@@ -32,4 +32,5 @@ jobs:
           LINE_USER_IDS: ${{ secrets.LINE_USER_IDS }}
           TIMEZONE: Asia/Taipei
           ENABLE_TOMORROW_PREVIEW: 'true'
+          ALLOW_BROWSER_OAUTH: 'false'
         run: python main.py test
