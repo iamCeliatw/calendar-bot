@@ -394,16 +394,14 @@ def _on_postback(event: PostbackEvent):
     # ── 精靈：DatetimePicker 選日期 ───────────────────────────────────────────
     elif data == "wizard:pick_date":
         params = event.postback.params
-        print(f"[DEBUG] pick_date params type={type(params)} value={params!r}", flush=True)
         date_str = ""
         try:
             if params is not None:
                 date_str = getattr(params, "date", None) or ""
                 if not date_str and isinstance(params, dict):
                     date_str = params.get("date", "") or ""
-        except Exception as e:
-            print(f"[DEBUG] pick_date params error: {e}", flush=True)
-        print(f"[DEBUG] pick_date date_str={date_str!r}", flush=True)
+        except Exception:
+            pass
         if not date_str:
             _reply_text(reply_token, "⚠️ 無法取得日期，請重新點選。")
             return
