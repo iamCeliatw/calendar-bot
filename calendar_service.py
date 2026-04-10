@@ -49,7 +49,7 @@ def get_credentials():
     """取得或刷新 Google OAuth 憑證"""
     creds = None
 
-    if os.path.exists(TOKEN_FILE):
+    if os.path.exists(TOKEN_FILE) and os.path.getsize(TOKEN_FILE) > 0:
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
         if not _has_required_scopes(creds):
             creds = None
@@ -127,6 +127,46 @@ def get_events(date: datetime, timezone_str: str = "Asia/Taipei") -> list[dict]:
     ).execute()
 
     return [_parse_event(e, tz) for e in result.get("items", [])]
+
+
+def get_events_for_days(
+    start: datetime,
+    end: datetime,
+    timezone_str: str = "Asia/Taipei",
+) -> dict[str, list[dict]]:
+    """取得日期範圍內每天的行程，回傳 {YYYY-MM-DD: [events]} dict（用於週檢視）。"""
+    creds = get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+    tz = ZoneInfo(timezone_str)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=tz)
+
+    result = service.events().list(
+        calendarId="primary",
+        timeMin=start.isoformat(),
+        timeMax=end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+
+    events_by_day: dict[str, list[dict]] = {}
+    current = start
+    while current < end:
+        events_by_day[current.strftime("%Y-%m-%d")] = []
+        current += timedelta(days=1)
+
+    for raw in result.get("items", []):
+        parsed = _parse_event(raw, tz)
+        if parsed["is_all_day"]:
+            date_str = raw["start"].get("date", "")
+        else:
+            date_str = parsed["start_time"].strftime("%Y-%m-%d") if parsed["start_time"] else ""
+        if date_str in events_by_day:
+            events_by_day[date_str].append(parsed)
+
+    return events_by_day
 
 
 def get_events_in_range(

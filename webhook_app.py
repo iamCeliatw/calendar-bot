@@ -161,9 +161,30 @@ def _skip_location_quick_reply() -> QuickReply:
 
 # ── 查看指令解析 ──────────────────────────────────────────────────────────────
 
-_RE_VIEW_KW  = re.compile(r"^查看\s*(今天|今日|明天|翌日|後天)$")
-_RE_VIEW_ISO = re.compile(r"^查看\s*(\d{4}[/-]\d{2}[/-]\d{2})$")
-_KW_DELTA    = {"今天": 0, "今日": 0, "明天": 1, "翌日": 1, "後天": 2}
+_RE_VIEW_KW   = re.compile(r"^查看\s*(今天|今日|明天|翌日|後天)$")
+_RE_VIEW_ISO  = re.compile(r"^查看\s*(\d{4}[/-]\d{2}[/-]\d{2})$")
+_RE_VIEW_WEEK = re.compile(r"^查看\s*(本週|本周|下週|下周)$")
+_KW_DELTA     = {"今天": 0, "今日": 0, "明天": 1, "翌日": 1, "後天": 2}
+
+
+def _try_parse_week_view(text: str) -> tuple[datetime, datetime, str] | None:
+    """解析「查看本週／下週」，回傳 (週一 00:00, 下週一 00:00, 標籤) 或 None。"""
+    m = _RE_VIEW_WEEK.match(text)
+    if not m:
+        return None
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    if m.group(1) in ("本週", "本周"):
+        start = this_monday
+        label = "本週"
+    else:
+        start = this_monday + timedelta(days=7)
+        label = "下週"
+    end = start + timedelta(days=7)
+    return start, end, label
 
 
 def _try_parse_view(text: str) -> datetime | None:
@@ -308,6 +329,14 @@ def _on_text(event: MessageEvent):
             _reply_flex(event.reply_token, line_service.build_event_list_flex(events, view_date))
         else:
             _reply_text(event.reply_token, f"📅 {view_date.strftime('%Y/%m/%d')} 沒有行程。")
+        return
+
+    week_range = _try_parse_week_view(text)
+    if week_range:
+        delete_session(uid)
+        start, end, label = week_range
+        events_by_day = calendar_service.get_events_for_days(start, end, TIMEZONE)
+        _reply_flex(event.reply_token, line_service.build_week_flex(events_by_day, start, label))
         return
 
     # ── 2. 嘗試解析為行程格式（有效格式會重置 session） ──────────────────────

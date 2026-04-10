@@ -8,3 +8,4 @@ credentials.json
 token.json
 *.md
 .github
+token_base64.txt

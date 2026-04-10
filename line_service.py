@@ -14,6 +14,7 @@ from linebot.v3.messaging import (
     PostbackAction,
     URIAction,
     MessageAction,
+    FlexCarousel,
 )
 
 from session_store import PendingEvent
@@ -391,6 +392,157 @@ def build_event_list_flex(events: list[dict], date: datetime) -> FlexMessage:
         alt_text=f"行程查詢：{date_str}（共 {len(events)} 個）",
         contents=bubble,
     )
+
+
+# ── 週行程卡片 ────────────────────────────────────────────────────────────────
+
+_WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
+
+
+def build_week_flex(
+    events_by_day: dict[str, list[dict]],
+    week_start: datetime,
+    label: str,
+) -> FlexMessage:
+    """建立週行程 Carousel（每天一個 Bubble，有行程才顯示；全週無行程時顯示提示）。"""
+    from datetime import timedelta
+
+    bubbles = []
+    for date_str, events in events_by_day.items():
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        wd = _WEEKDAY_NAMES[date_obj.weekday()]
+        date_label = f"{date_obj.strftime('%m/%d')}（{wd}）"
+
+        if not events:
+            continue
+
+        body_contents = []
+        for i, event in enumerate(events):
+            if i > 0:
+                body_contents.append(FlexSeparator(type="separator", margin="sm"))
+            if event["is_all_day"]:
+                time_text = "全天"
+                badge_color = "#6C63FF"
+            else:
+                s = event["start_time"].strftime("%H:%M")
+                e = event["end_time"].strftime("%H:%M")
+                time_text = f"{s}–{e}"
+                badge_color = "#1DB446"
+
+            time_badge = FlexBox(
+                type="box",
+                layout="vertical",
+                background_color=badge_color,
+                corner_radius="4px",
+                padding_all="4px",
+                width="80px",
+                justify_content="center",
+                contents=[
+                    FlexText(
+                        type="text",
+                        text=time_text,
+                        size="xs",
+                        color="#ffffff",
+                        weight="bold",
+                        align="center",
+                    )
+                ],
+            )
+            title = FlexText(
+                type="text",
+                text=event["summary"],
+                size="sm",
+                weight="bold",
+                color="#333333",
+                flex=1,
+                wrap=True,
+                margin="sm",
+            )
+            row_contents = [
+                FlexBox(
+                    type="box",
+                    layout="horizontal",
+                    contents=[time_badge, title],
+                    align_items="center",
+                    margin="sm",
+                )
+            ]
+            if event.get("location"):
+                row_contents.append(
+                    FlexBox(
+                        type="box",
+                        layout="horizontal",
+                        margin="sm",
+                        contents=[
+                            FlexText(type="text", text="📍", size="xs", flex=0),
+                            FlexText(
+                                type="text",
+                                text=event["location"],
+                                size="xs",
+                                color="#888888",
+                                wrap=True,
+                                margin="sm",
+                            ),
+                        ],
+                    )
+                )
+            body_contents.append(FlexBox(type="box", layout="vertical", contents=row_contents))
+
+        bubble = FlexBubble(
+            type="bubble",
+            size="kilo",
+            header=FlexBox(
+                type="box",
+                layout="vertical",
+                background_color="#4A90E2",
+                padding_all="12px",
+                contents=[
+                    FlexText(
+                        type="text",
+                        text=date_label,
+                        color="#ffffff",
+                        size="sm",
+                        weight="bold",
+                    )
+                ],
+            ),
+            body=FlexBox(
+                type="box",
+                layout="vertical",
+                spacing="sm",
+                padding_all="12px",
+                contents=body_contents,
+            ),
+        )
+        bubbles.append(bubble)
+
+    week_end = week_start + timedelta(days=6)
+    range_str = f"{week_start.strftime('%m/%d')}–{week_end.strftime('%m/%d')}"
+    alt = f"📆 {label}行程 {range_str}"
+
+    if not bubbles:
+        bubble = FlexBubble(
+            type="bubble",
+            body=FlexBox(
+                type="box",
+                layout="vertical",
+                padding_all="20px",
+                contents=[
+                    FlexText(
+                        type="text",
+                        text=f"📆 {label}（{range_str}）\n沒有任何行程。",
+                        size="sm",
+                        color="#888888",
+                        wrap=True,
+                        align="center",
+                    )
+                ],
+            ),
+        )
+        return FlexMessage(alt_text=alt, contents=bubble)
+
+    carousel = FlexCarousel(type="carousel", contents=bubbles)
+    return FlexMessage(alt_text=alt, contents=carousel)
 
 
 # ── 排程推播（原有功能） ──────────────────────────────────────────────────────
