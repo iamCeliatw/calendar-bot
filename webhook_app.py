@@ -101,18 +101,8 @@ def _reply_text_with_qr(reply_token: str, text: str, quick_reply: QuickReply) ->
 def _date_quick_reply() -> QuickReply:
     tz  = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
-    labels = [("今天", 0), ("明天", 1), ("後天", 2)]
+    # 指定日期（系統日曆）排第一
     items = [
-        QuickReplyItem(
-            action=PostbackAction(
-                label=f"{label}（{(now + timedelta(days=d)).strftime('%m/%d')}）",
-                data=f"wizard:date:{(now + timedelta(days=d)).strftime('%Y-%m-%d')}",
-            )
-        )
-        for label, d in labels
-    ]
-    # 開啟系統日曆讓使用者點選任意日期
-    items.append(
         QuickReplyItem(
             action=DatetimePickerAction(
                 label="指定日期 📅",
@@ -123,7 +113,17 @@ def _date_quick_reply() -> QuickReply:
                 max="2035-12-31",
             )
         )
-    )
+    ]
+    labels = [("今天", 0), ("明天", 1), ("後天", 2)]
+    for label, d in labels:
+        items.append(
+            QuickReplyItem(
+                action=PostbackAction(
+                    label=f"{label}（{(now + timedelta(days=d)).strftime('%m/%d')}）",
+                    data=f"wizard:date:{(now + timedelta(days=d)).strftime('%Y-%m-%d')}",
+                )
+            )
+        )
     return QuickReply(items=items)
 
 
@@ -393,7 +393,10 @@ def _on_postback(event: PostbackEvent):
 
     # ── 精靈：DatetimePicker 選日期 ───────────────────────────────────────────
     elif data == "wizard:pick_date":
-        date_str = (event.postback.params and event.postback.params.date) or ""
+        try:
+            date_str = getattr(event.postback.params, "date", None) or ""
+        except Exception:
+            date_str = ""
         if not date_str:
             _reply_text(reply_token, "⚠️ 無法取得日期，請重新點選。")
             return
