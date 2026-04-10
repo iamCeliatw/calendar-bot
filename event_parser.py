@@ -29,7 +29,7 @@ def _extract_location(text: str) -> tuple[str, str]:
 
 # ── regex 定義 ──────────────────────────────────────────────────────────────
 _KW   = r"(今天|今日|明天|翌日|後天)"
-_DATE = r"(\d{4}-\d{2}-\d{2})"
+_DATE = r"(\d{4}[/-]\d{2}[/-]\d{2})"
 _TIME = r"(\d{1,2}):(\d{2})"
 _SEP  = r"\s*[-–~至]\s*"
 _REST = r"(.+)"
@@ -42,6 +42,11 @@ _RE_ISO_ALLDAY  = re.compile(rf"^{_DATE}\s+全天\s+{_REST}$")
 _RE_KW_ALLDAY   = re.compile(rf"^{_KW}\s+全天\s+{_REST}$")
 # 關鍵字 + 非數字開頭的文字 → 隱含全天（沒有時間）
 _RE_KW_IMPLICIT = re.compile(rf"^{_KW}\s+([^\d].*)$")
+
+
+def _norm_date(s: str) -> str:
+    """將 YYYY/MM/DD 正規化為 YYYY-MM-DD，方便後續 split 與 strptime。"""
+    return s.replace("/", "-")
 
 
 def _base_date(keyword: str, now_local: datetime) -> datetime:
@@ -73,7 +78,7 @@ def parse_event_line(text: str, timezone_str: str) -> Optional[ParsedEvent]:
     # ── ISO 日期 + 時間範圍 ────────────────────────────────────────────────
     m = _RE_ISO_RANGE.match(raw)
     if m:
-        y, mo, d = map(int, m.group(1).split("-"))
+        y, mo, d = map(int, _norm_date(m.group(1)).split("-"))
         sh, sm = int(m.group(2)), int(m.group(3))
         eh, em = int(m.group(4)), int(m.group(5))
         summary, location = _extract_location(m.group(6).strip())
@@ -86,7 +91,7 @@ def parse_event_line(text: str, timezone_str: str) -> Optional[ParsedEvent]:
     # ── ISO 日期 + 單一時間 ────────────────────────────────────────────────
     m = _RE_ISO_SINGLE.match(raw)
     if m:
-        y, mo, d = map(int, m.group(1).split("-"))
+        y, mo, d = map(int, _norm_date(m.group(1)).split("-"))
         sh, sm = int(m.group(2)), int(m.group(3))
         summary, location = _extract_location(m.group(4).strip())
         start = datetime(y, mo, d, sh, sm, tzinfo=tz)
@@ -119,7 +124,7 @@ def parse_event_line(text: str, timezone_str: str) -> Optional[ParsedEvent]:
     # ── ISO 日期 + 全天（明確） ───────────────────────────────────────────
     m = _RE_ISO_ALLDAY.match(raw)
     if m:
-        date_str = m.group(1)
+        date_str = _norm_date(m.group(1))
         summary, location = _extract_location(m.group(2).strip())
         return ParsedEvent(summary=summary, start=None, end=None, location=location,
                            is_all_day=True, all_day_date=date_str)
@@ -150,7 +155,7 @@ USAGE_HELP = """📋 行程輸入格式
 ⏰ 有時間（預設 1 小時）：
   今天 15:00 開會
   明天 15:00-16:00 開會
-  2026-03-30 15:00 開會
+  2026/03/30 15:00 開會
 
 📍 加地點（結尾加 @地點）：
   今天 15:00 開會 @信義辦公室
@@ -160,10 +165,10 @@ USAGE_HELP = """📋 行程輸入格式
   今天 讀書日
 
 🧙 精靈模式（逐步引導）：
-  輸入「新增行程」
+  輸入「新增行程」→ 點選日期、時間、時長
 
-🔍 查看 ＆ 刪除行程：
+🔍 查看行程：
   查看今天 ／ 查看明天 ／ 查看後天
-  查看 2026-03-30
+  查看 2026/03/30
 
 輸入「說明」可再顯示此訊息。"""

@@ -25,6 +25,7 @@ from linebot.v3.messaging import (
     QuickReplyItem,
     PostbackAction,
     MessageAction,
+    DatetimePickerAction,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 
@@ -110,6 +111,19 @@ def _date_quick_reply() -> QuickReply:
         )
         for label, d in labels
     ]
+    # 開啟系統日曆讓使用者點選任意日期
+    items.append(
+        QuickReplyItem(
+            action=DatetimePickerAction(
+                label="指定日期 📅",
+                data="wizard:pick_date",
+                mode="date",
+                initial=now.strftime("%Y-%m-%d"),
+                min="2020-01-01",
+                max="2035-12-31",
+            )
+        )
+    )
     return QuickReply(items=items)
 
 
@@ -148,7 +162,7 @@ def _skip_location_quick_reply() -> QuickReply:
 # ── 查看指令解析 ──────────────────────────────────────────────────────────────
 
 _RE_VIEW_KW  = re.compile(r"^查看\s*(今天|今日|明天|翌日|後天)$")
-_RE_VIEW_ISO = re.compile(r"^查看\s*(\d{4}-\d{2}-\d{2})$")
+_RE_VIEW_ISO = re.compile(r"^查看\s*(\d{4}[/-]\d{2}[/-]\d{2})$")
 _KW_DELTA    = {"今天": 0, "今日": 0, "明天": 1, "翌日": 1, "後天": 2}
 
 
@@ -164,7 +178,8 @@ def _try_parse_view(text: str) -> datetime | None:
     m = _RE_VIEW_ISO.match(text)
     if m:
         try:
-            return datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=tz)
+            date_str = m.group(1).replace("/", "-")
+            return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tz)
         except ValueError:
             return None
 
@@ -205,18 +220,20 @@ def _handle_wizard_text(uid: str, text: str, reply_token: str, pending: PendingE
     tz   = ZoneInfo(TIMEZONE)
 
     if step == "wizard_date":
-        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", text.strip())
+        m = re.match(r"^(\d{4})[/-](\d{2})[/-](\d{2})$", text.strip())
         if m:
-            pending.all_day_date = text.strip()
+            date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"  # 內部統一用 -
+            display_date = f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+            pending.all_day_date = date_str
             pending.step = "wizard_time"
             set_session(uid, pending)
             _reply_text_with_qr(
                 reply_token,
-                f"請選擇時間（{text.strip()}）：",
+                f"請選擇時間（{display_date}）：",
                 _time_quick_reply(),
             )
         else:
-            _reply_text(reply_token, "請輸入日期格式 YYYY-MM-DD（例：2026-04-15）或點選上方按鈕。")
+            _reply_text(reply_token, "請輸入日期格式 YYYY/MM/DD（例：2026/04/15）或點選上方按鈕。")
 
     elif step == "wizard_time":
         m = re.match(r"^(\d{1,2}):(\d{2})$", text.strip())
@@ -290,7 +307,7 @@ def _on_text(event: MessageEvent):
         if events:
             _reply_flex(event.reply_token, line_service.build_event_list_flex(events, view_date))
         else:
-            _reply_text(event.reply_token, f"📅 {view_date.strftime('%Y-%m-%d')} 沒有行程。")
+            _reply_text(event.reply_token, f"📅 {view_date.strftime('%Y/%m/%d')} 沒有行程。")
         return
 
     # ── 2. 嘗試解析為行程格式（有效格式會重置 session） ──────────────────────
@@ -364,14 +381,28 @@ def _on_postback(event: PostbackEvent):
         delete_session(uid)
         _reply_text(reply_token, "已取消。")
 
-    # ── 精靈：選日期 ──────────────────────────────────────────────────────────
+    # ── 精靈：選日期（快捷按鈕） ──────────────────────────────────────────────
     elif data.startswith("wizard:date:"):
         date_str = data[12:]  # "YYYY-MM-DD"
+        display_date = date_str.replace("-", "/")
         pending  = get_session(uid) or PendingEvent(step="wizard_time")
         pending.all_day_date = date_str
         pending.step = "wizard_time"
         set_session(uid, pending)
-        _reply_text_with_qr(reply_token, f"請選擇時間（{date_str}）：", _time_quick_reply())
+        _reply_text_with_qr(reply_token, f"請選擇時間（{display_date}）：", _time_quick_reply())
+
+    # ── 精靈：DatetimePicker 選日期 ───────────────────────────────────────────
+    elif data == "wizard:pick_date":
+        date_str = (event.postback.params and event.postback.params.date) or ""
+        if not date_str:
+            _reply_text(reply_token, "⚠️ 無法取得日期，請重新點選。")
+            return
+        display_date = date_str.replace("-", "/")
+        pending = get_session(uid) or PendingEvent(step="wizard_time")
+        pending.all_day_date = date_str
+        pending.step = "wizard_time"
+        set_session(uid, pending)
+        _reply_text_with_qr(reply_token, f"請選擇時間（{display_date}）：", _time_quick_reply())
 
     # ── 精靈：選時間 ──────────────────────────────────────────────────────────
     elif data.startswith("wizard:time:"):

@@ -45,10 +45,10 @@ def _info_row(icon: str, text: str, bold: bool = False) -> FlexBox:
 def _pending_info_rows(pending: PendingEvent) -> list:
     """從 PendingEvent 建立行程資訊列（名稱、日期、時間、地點）。"""
     if pending.is_all_day:
-        date_label = pending.all_day_date or ""
+        date_label = (pending.all_day_date or "").replace("-", "/")
         time_label = "全天"
     else:
-        date_label = pending.start.strftime("%Y-%m-%d") if pending.start else ""
+        date_label = pending.start.strftime("%Y/%m/%d") if pending.start else ""
         start_str  = pending.start.strftime("%H:%M") if pending.start else ""
         end_str    = pending.end.strftime("%H:%M")   if pending.end   else ""
         time_label = f"{start_str} – {end_str}"
@@ -189,7 +189,7 @@ def build_conflict_flex(conflicts: list[dict], pending: PendingEvent) -> FlexMes
         )
 
     if pending.is_all_day:
-        new_when = f"{pending.all_day_date} 全天"
+        new_when = f"{(pending.all_day_date or '').replace('-', '/')} 全天"
     else:
         s = pending.start.strftime("%H:%M") if pending.start else ""
         e = pending.end.strftime("%H:%M")   if pending.end   else ""
@@ -340,7 +340,7 @@ def build_event_list_flex(events: list[dict], date: datetime) -> FlexMessage:
             FlexBox(type="box", layout="vertical", contents=event_rows, padding_all="4px")
         )
 
-    date_str = date.strftime("%Y-%m-%d")
+    date_str = date.strftime("%Y/%m/%d")
     bubble = FlexBubble(
         type="bubble",
         header=FlexBox(
