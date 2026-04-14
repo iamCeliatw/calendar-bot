@@ -12,6 +12,7 @@ from linebot.v3.messaging import (
     FlexText,
     FlexSeparator,
     FlexButton,
+    FlexFiller,
     PostbackAction,
     URIAction,
     MessageAction,
@@ -19,6 +20,8 @@ from linebot.v3.messaging import (
 )
 
 from session_store import PendingEvent
+
+_WEEKDAY_ZH = ("週一", "週二", "週三", "週四", "週五", "週六", "週日")
 
 
 # ── 共用小元件 ────────────────────────────────────────────────────────────────
@@ -229,6 +232,120 @@ def build_reminder_confirmation_flex(remind_at: datetime, reminder_text: str) ->
         ),
     )
     return FlexMessage(alt_text=f"確認提醒：{when_text}", contents=bubble)
+
+
+def build_reminder_arrived_flex(remind_at: datetime, reminder_text: str) -> FlexMessage:
+    """到點推播用的提醒卡片（與確認卡風格一致、易讀）。"""
+    wk = _WEEKDAY_ZH[remind_at.weekday()]
+    date_line = f"{remind_at.strftime('%Y/%m/%d')}（{wk}）"
+    time_line = remind_at.strftime("%H:%M")
+    alt = f"⏰ 提醒：{reminder_text}"
+    if len(alt) > 400:
+        alt = alt[:397] + "..."
+
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box",
+            layout="vertical",
+            background_color="#8E44AD",
+            padding_all="16px",
+            contents=[
+                FlexText(
+                    type="text",
+                    text="⏰ 提醒時間到",
+                    color="#ffffff",
+                    size="md",
+                    weight="bold",
+                ),
+                FlexText(
+                    type="text",
+                    text="以下是您先前排定的提醒",
+                    color="#E8DAEF",
+                    size="xs",
+                    margin="sm",
+                    wrap=True,
+                ),
+            ],
+        ),
+        body=FlexBox(
+            type="box",
+            layout="vertical",
+            spacing="md",
+            padding_all="16px",
+            contents=[
+                FlexBox(
+                    type="box",
+                    layout="vertical",
+                    background_color="#F4ECFF",
+                    corner_radius="8px",
+                    padding_all="12px",
+                    spacing="xs",
+                    contents=[
+                        FlexText(
+                            type="text",
+                            text="預定時間",
+                            size="xs",
+                            color="#7D3C98",
+                            weight="bold",
+                        ),
+                        FlexBox(
+                            type="box",
+                            layout="horizontal",
+                            spacing="sm",
+                            align_items="flex-end",
+                            contents=[
+                                FlexText(
+                                    type="text",
+                                    text=date_line,
+                                    size="sm",
+                                    color="#333333",
+                                    wrap=True,
+                                    flex=1,
+                                ),
+                                FlexText(
+                                    type="text",
+                                    text=time_line,
+                                    size="xl",
+                                    weight="bold",
+                                    color="#6C3483",
+                                    flex=0,
+                                ),
+                                FlexFiller(type="filler"),
+                            ],
+                        ),
+                    ],
+                ),
+                FlexSeparator(type="separator", margin="none"),
+                FlexBox(
+                    type="box",
+                    layout="vertical",
+                    background_color="#FFFBF0",
+                    corner_radius="8px",
+                    padding_all="12px",
+                    spacing="xs",
+                    contents=[
+                        FlexText(
+                            type="text",
+                            text="提醒內容",
+                            size="xs",
+                            color="#B7950B",
+                            weight="bold",
+                        ),
+                        FlexText(
+                            type="text",
+                            text=reminder_text,
+                            size="md",
+                            color="#333333",
+                            weight="bold",
+                            wrap=True,
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    return FlexMessage(alt_text=alt, contents=bubble)
 
 
 def build_conflict_flex(conflicts: list[dict], pending: PendingEvent) -> FlexMessage:
@@ -768,17 +885,13 @@ def _send(label: str, events: list[dict]):
 
 
 def send_single_reminder(user_id: str, reminder_text: str, remind_at: datetime) -> None:
-    """發送單一使用者提醒訊息。"""
+    """發送單一使用者提醒訊息（Flex 卡片）。"""
     token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"].strip()
-    msg = (
-        "⏰ 提醒時間到！\n"
-        f"時間：{remind_at.strftime('%Y/%m/%d %H:%M')}\n"
-        f"內容：{reminder_text}"
-    )
+    flex_msg = build_reminder_arrived_flex(remind_at, reminder_text)
     config = Configuration(access_token=token)
     with ApiClient(config) as client:
         api = MessagingApi(client)
         api.push_message(
-            PushMessageRequest(to=user_id, messages=[TextMessage(text=msg)])
+            PushMessageRequest(to=user_id, messages=[flex_msg])
         )
     print(f"[LINE] 已發送提醒給 {user_id}")
