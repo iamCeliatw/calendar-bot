@@ -19,6 +19,10 @@ class PendingEvent:
     #   "wizard_duration"— 精靈：選時長
     #   "wizard_title"   — 精靈：輸入名稱
     #   "wizard_location"— 精靈：輸入地點
+    #   "reminder_date"  — 提醒精靈：選日期
+    #   "reminder_time"  — 提醒精靈：選時間
+    #   "reminder_text"  — 提醒精靈：輸入提醒內容
+    #   "reminder_confirm"— 提醒精靈：確認建立
     summary: Optional[str] = None
     start: Optional[datetime] = None
     end: Optional[datetime] = None
@@ -26,6 +30,9 @@ class PendingEvent:
     is_all_day: bool = False
     all_day_date: Optional[str] = None   # "YYYY-MM-DD"，全天事件及精靈暫存日期共用
     wizard_time: str = ""                # 精靈暫存時間 "HH:MM"
+    reminder_date: Optional[str] = None  # "YYYY-MM-DD"
+    reminder_time: str = ""              # "HH:MM"
+    reminder_text: str = ""
     expires_at: datetime = field(
         default_factory=lambda: datetime.now() + timedelta(minutes=10)
     )

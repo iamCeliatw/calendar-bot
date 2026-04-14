@@ -5,13 +5,16 @@ LINE Webhook：接收使用者文字訊息並寫入 Google Calendar。
 環境變數：LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET、LINE_USER_IDS、TIMEZONE
 """
 
+import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, request
+from google.cloud import tasks_v2
+from google.protobuf.timestamp_pb2 import Timestamp
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -41,6 +44,12 @@ app = Flask(__name__)
 CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "").strip()
 CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 TIMEZONE             = os.getenv("TIMEZONE", "Asia/Taipei")
+ENABLE_REMINDER      = os.getenv("ENABLE_REMINDER", "true").lower() == "true"
+GCP_PROJECT_ID       = os.getenv("GCP_PROJECT_ID", "").strip()
+GCP_LOCATION         = os.getenv("GCP_LOCATION", "asia-east1").strip()
+REMINDER_TASK_QUEUE  = os.getenv("REMINDER_TASK_QUEUE", "calendar-reminder-queue").strip()
+TASK_HANDLER_URL     = os.getenv("TASK_HANDLER_URL", "").strip()
+REMINDER_TASK_TOKEN  = os.getenv("REMINDER_TASK_TOKEN", "").strip()
 
 _allowed_ids: frozenset[str] | None = None
 _user_names: dict[str, str] = {}
@@ -127,6 +136,34 @@ def _date_quick_reply() -> QuickReply:
     return QuickReply(items=items)
 
 
+def _reminder_date_quick_reply() -> QuickReply:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    items = [
+        QuickReplyItem(
+            action=DatetimePickerAction(
+                label="指定日期 📅",
+                data="reminder:pick_date",
+                mode="date",
+                initial=now.strftime("%Y-%m-%d"),
+                min="2020-01-01",
+                max="2035-12-31",
+            )
+        )
+    ]
+    labels = [("今天", 0), ("明天", 1), ("後天", 2)]
+    for label, d in labels:
+        items.append(
+            QuickReplyItem(
+                action=PostbackAction(
+                    label=f"{label}（{(now + timedelta(days=d)).strftime('%m/%d')}）",
+                    data=f"reminder:date:{(now + timedelta(days=d)).strftime('%Y-%m-%d')}",
+                )
+            )
+        )
+    return QuickReply(items=items)
+
+
 def _time_quick_reply() -> QuickReply:
     slots = ["全天", "08:00", "09:00", "10:00", "11:00", "12:00",
              "13:00", "14:00", "15:00", "16:00", "18:00", "20:00"]
@@ -136,6 +173,18 @@ def _time_quick_reply() -> QuickReply:
                 label=t,
                 data="wizard:time:allday" if t == "全天" else f"wizard:time:{t}",
             )
+        )
+        for t in slots
+    ]
+    return QuickReply(items=items)
+
+
+def _reminder_time_quick_reply() -> QuickReply:
+    slots = ["08:00", "09:00", "10:00", "11:00", "12:00",
+             "13:00", "14:00", "15:00", "16:00", "18:00", "20:00"]
+    items = [
+        QuickReplyItem(
+            action=PostbackAction(label=t, data=f"reminder:time:{t}")
         )
         for t in slots
     ]
@@ -205,6 +254,68 @@ def _try_parse_view(text: str) -> datetime | None:
             return None
 
     return None
+
+
+def _build_remind_at(pending: PendingEvent, tz: ZoneInfo) -> datetime | None:
+    if not pending.reminder_date or not pending.reminder_time:
+        return None
+    y, mo, d = map(int, pending.reminder_date.split("-"))
+    h, mi = map(int, pending.reminder_time.split(":"))
+    return datetime(y, mo, d, h, mi, tzinfo=tz)
+
+
+def _extract_postback_date(event: PostbackEvent) -> str:
+    params = event.postback.params
+    date_str = ""
+    try:
+        if params is not None:
+            date_str = getattr(params, "date", None) or ""
+            if not date_str and isinstance(params, dict):
+                date_str = params.get("date", "") or ""
+    except Exception:
+        pass
+    return date_str
+
+
+def _create_reminder_task(user_id: str, remind_at: datetime, reminder_text: str) -> str:
+    if not ENABLE_REMINDER:
+        raise RuntimeError("提醒功能未啟用（ENABLE_REMINDER=false）")
+    if not GCP_PROJECT_ID:
+        raise RuntimeError("缺少 GCP_PROJECT_ID")
+    if not GCP_LOCATION:
+        raise RuntimeError("缺少 GCP_LOCATION")
+    if not REMINDER_TASK_QUEUE:
+        raise RuntimeError("缺少 REMINDER_TASK_QUEUE")
+    if not TASK_HANDLER_URL:
+        raise RuntimeError("缺少 TASK_HANDLER_URL")
+    if not REMINDER_TASK_TOKEN:
+        raise RuntimeError("缺少 REMINDER_TASK_TOKEN")
+
+    payload = {
+        "user_id": user_id,
+        "reminder_text": reminder_text,
+        "remind_at": remind_at.isoformat(),
+    }
+    schedule_time = Timestamp()
+    schedule_time.FromDatetime(remind_at.astimezone(timezone.utc))
+
+    task = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": TASK_HANDLER_URL,
+            "headers": {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {REMINDER_TASK_TOKEN}",
+            },
+            "body": json.dumps(payload).encode("utf-8"),
+        },
+        "schedule_time": schedule_time,
+    }
+
+    client = tasks_v2.CloudTasksClient()
+    parent = client.queue_path(GCP_PROJECT_ID, GCP_LOCATION, REMINDER_TASK_QUEUE)
+    created = client.create_task(request={"parent": parent, "task": task})
+    return created.name
 
 
 # ── 建立行程（抽出共用邏輯） ──────────────────────────────────────────────────
@@ -283,6 +394,58 @@ def _handle_wizard_text(uid: str, text: str, reply_token: str, pending: PendingE
         set_session(uid, pending)
         _reply_flex(reply_token, line_service.build_confirmation_flex(pending))
 
+    elif step == "reminder_date":
+        m = re.match(r"^(\d{4})[/-](\d{2})[/-](\d{2})$", text.strip())
+        if m:
+            date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            display_date = f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+            pending.reminder_date = date_str
+            pending.step = "reminder_time"
+            set_session(uid, pending)
+            _reply_text_with_qr(
+                reply_token,
+                f"請選擇提醒時間（{display_date}）：",
+                _reminder_time_quick_reply(),
+            )
+        else:
+            _reply_text(reply_token, "請輸入日期格式 YYYY/MM/DD（例：2026/04/15）或點選上方按鈕。")
+
+    elif step == "reminder_time":
+        m = re.match(r"^(\d{1,2}):(\d{2})$", text.strip())
+        if m:
+            h, mi = int(m.group(1)), int(m.group(2))
+            if h < 0 or h > 23 or mi < 0 or mi > 59:
+                _reply_text(reply_token, "時間無效，請輸入 HH:MM（例：15:00）。")
+                return
+            pending.reminder_time = f"{h:02d}:{mi:02d}"
+            pending.step = "reminder_text"
+            set_session(uid, pending)
+            _reply_text(reply_token, "請輸入提醒內容：")
+        else:
+            _reply_text(reply_token, "請輸入時間格式 HH:MM（例：15:00）或點選上方按鈕。")
+
+    elif step == "reminder_text":
+        reminder_text = text.strip()
+        if not reminder_text:
+            _reply_text(reply_token, "提醒內容不可為空，請重新輸入。")
+            return
+        pending.reminder_text = reminder_text
+        remind_at = _build_remind_at(pending, tz)
+        if not remind_at:
+            _reply_text(reply_token, "⚠️ 時間解析失敗，請重新輸入「新增提醒」。")
+            delete_session(uid)
+            return
+        if remind_at <= datetime.now(tz):
+            _reply_text(reply_token, "⚠️ 不能設定過去時間，請重新輸入「新增提醒」。")
+            delete_session(uid)
+            return
+        pending.step = "reminder_confirm"
+        set_session(uid, pending)
+        _reply_flex(
+            reply_token,
+            line_service.build_reminder_confirmation_flex(remind_at, reminder_text),
+        )
+
     else:
         _reply_text(reply_token, "無法解析。\n\n" + event_parser.USAGE_HELP)
 
@@ -319,6 +482,12 @@ def _on_text(event: MessageEvent):
         delete_session(uid)
         set_session(uid, PendingEvent(step="wizard_date"))
         _reply_text_with_qr(event.reply_token, "請選擇日期：", _date_quick_reply())
+        return
+
+    if ENABLE_REMINDER and text in ("新增提醒", "提醒我"):
+        delete_session(uid)
+        set_session(uid, PendingEvent(step="reminder_date"))
+        _reply_text_with_qr(event.reply_token, "請選擇提醒日期：", _reminder_date_quick_reply())
         return
 
     view_date = _try_parse_view(text)
@@ -406,7 +575,7 @@ def _on_postback(event: PostbackEvent):
         _do_create_event(pending, reply_token)
 
     # ── 取消 ──────────────────────────────────────────────────────────────────
-    elif data == "cancel":
+    elif data in ("cancel", "reminder:cancel"):
         delete_session(uid)
         _reply_text(reply_token, "已取消。")
 
@@ -422,15 +591,7 @@ def _on_postback(event: PostbackEvent):
 
     # ── 精靈：DatetimePicker 選日期 ───────────────────────────────────────────
     elif data == "wizard:pick_date":
-        params = event.postback.params
-        date_str = ""
-        try:
-            if params is not None:
-                date_str = getattr(params, "date", None) or ""
-                if not date_str and isinstance(params, dict):
-                    date_str = params.get("date", "") or ""
-        except Exception:
-            pass
+        date_str = _extract_postback_date(event)
         if not date_str:
             _reply_text(reply_token, "⚠️ 無法取得日期，請重新點選。")
             return
@@ -491,6 +652,86 @@ def _on_postback(event: PostbackEvent):
         set_session(uid, pending)
         _reply_flex(reply_token, line_service.build_confirmation_flex(pending))
 
+    # ── 提醒精靈：選日期（快捷按鈕） ───────────────────────────────────────────
+    elif data.startswith("reminder:date:"):
+        date_str = data[14:]  # "YYYY-MM-DD"
+        display_date = date_str.replace("-", "/")
+        pending = get_session(uid) or PendingEvent(step="reminder_time")
+        pending.reminder_date = date_str
+        pending.step = "reminder_time"
+        set_session(uid, pending)
+        _reply_text_with_qr(
+            reply_token,
+            f"請選擇提醒時間（{display_date}）：",
+            _reminder_time_quick_reply(),
+        )
+
+    # ── 提醒精靈：DatetimePicker 選日期 ───────────────────────────────────────
+    elif data == "reminder:pick_date":
+        date_str = _extract_postback_date(event)
+        if not date_str:
+            _reply_text(reply_token, "⚠️ 無法取得日期，請重新點選。")
+            return
+        display_date = date_str.replace("-", "/")
+        pending = get_session(uid) or PendingEvent(step="reminder_time")
+        pending.reminder_date = date_str
+        pending.step = "reminder_time"
+        set_session(uid, pending)
+        _reply_text_with_qr(
+            reply_token,
+            f"請選擇提醒時間（{display_date}）：",
+            _reminder_time_quick_reply(),
+        )
+
+    # ── 提醒精靈：選時間 ───────────────────────────────────────────────────────
+    elif data.startswith("reminder:time:"):
+        time_val = data[14:]  # "HH:MM"
+        pending = get_session(uid)
+        if not pending:
+            _reply_text(reply_token, "⚠️ 操作逾時，請重新輸入「新增提醒」。")
+            return
+        pending.reminder_time = time_val
+        pending.step = "reminder_text"
+        set_session(uid, pending)
+        _reply_text(reply_token, "請輸入提醒內容：")
+
+    # ── 提醒精靈：確認建立 ─────────────────────────────────────────────────────
+    elif data == "reminder:confirm":
+        pending = get_session(uid)
+        if not pending:
+            _reply_text(reply_token, "⚠️ 操作逾時，請重新輸入「新增提醒」。")
+            return
+        if pending.step != "reminder_confirm":
+            _reply_text(reply_token, "⚠️ 流程狀態不正確，請重新輸入「新增提醒」。")
+            delete_session(uid)
+            return
+
+        remind_at = _build_remind_at(pending, tz)
+        reminder_text = pending.reminder_text.strip()
+        if not remind_at or not reminder_text:
+            _reply_text(reply_token, "⚠️ 提醒資料不完整，請重新輸入「新增提醒」。")
+            delete_session(uid)
+            return
+        if remind_at <= datetime.now(tz):
+            _reply_text(reply_token, "⚠️ 不能設定過去時間，請重新輸入「新增提醒」。")
+            delete_session(uid)
+            return
+
+        try:
+            task_name = _create_reminder_task(uid, remind_at, reminder_text)
+        except Exception as e:
+            _reply_text(reply_token, f"建立提醒失敗：{e}")
+            return
+
+        delete_session(uid)
+        _reply_text(
+            reply_token,
+            "✅ 提醒已建立\n"
+            f"時間：{remind_at.strftime('%Y/%m/%d %H:%M')}\n"
+            f"內容：{reminder_text}\n"
+            f"Task：{task_name.split('/')[-1]}",
+        )
+
 
 # ── Flask 路由 ────────────────────────────────────────────────────────────────
 
@@ -520,6 +761,30 @@ def callback():
 @app.route("/health", methods=["GET", "POST"])
 def health():
     return "ok", 200
+
+
+@app.route("/tasks/reminder", methods=["POST"])
+def tasks_reminder():
+    auth = request.headers.get("Authorization", "")
+    if not REMINDER_TASK_TOKEN:
+        return "REMINDER_TASK_TOKEN 未設定", 503
+    if auth != f"Bearer {REMINDER_TASK_TOKEN}":
+        return "Unauthorized", 401
+
+    payload = request.get_json(silent=True) or {}
+    user_id = str(payload.get("user_id", "")).strip()
+    reminder_text = str(payload.get("reminder_text", "")).strip()
+    remind_at_raw = str(payload.get("remind_at", "")).strip()
+    if not user_id or not reminder_text:
+        return "Bad Request: missing user_id or reminder_text", 400
+
+    try:
+        remind_at = datetime.fromisoformat(remind_at_raw)
+    except ValueError:
+        remind_at = datetime.now(ZoneInfo(TIMEZONE))
+
+    line_service.send_single_reminder(user_id, reminder_text, remind_at)
+    return "OK", 200
 
 
 if __name__ == "__main__":
