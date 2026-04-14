@@ -5,6 +5,7 @@ from linebot.v3.messaging import (
     Configuration,
     MessagingApi,
     PushMessageRequest,
+    TextMessage,
     FlexMessage,
     FlexBubble,
     FlexBox,
@@ -173,6 +174,61 @@ def build_success_flex(pending: PendingEvent, link: str) -> FlexMessage:
     )
     summary = pending.summary or "行程"
     return FlexMessage(alt_text=f"✅ 已建立：{summary}", contents=bubble)
+
+
+def build_reminder_confirmation_flex(remind_at: datetime, reminder_text: str) -> FlexMessage:
+    """建立提醒確認卡片（含「✅ 建立提醒」「❌ 取消」按鈕）。"""
+    when_text = remind_at.strftime("%Y/%m/%d %H:%M")
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box",
+            layout="vertical",
+            background_color="#8E44AD",
+            padding_all="16px",
+            contents=[
+                FlexText(
+                    type="text",
+                    text="⏰ 確認建立提醒？",
+                    color="#ffffff",
+                    size="md",
+                    weight="bold",
+                )
+            ],
+        ),
+        body=FlexBox(
+            type="box",
+            layout="vertical",
+            spacing="md",
+            padding_all="16px",
+            contents=[
+                _info_row("📅", when_text),
+                _info_row("📝", reminder_text, bold=True),
+            ],
+        ),
+        footer=FlexBox(
+            type="box",
+            layout="horizontal",
+            spacing="sm",
+            padding_all="12px",
+            contents=[
+                FlexButton(
+                    type="button",
+                    style="primary",
+                    color="#27AE60",
+                    action=PostbackAction(label="✅ 建立提醒", data="reminder:confirm"),
+                    flex=1,
+                ),
+                FlexButton(
+                    type="button",
+                    style="secondary",
+                    action=PostbackAction(label="❌ 取消", data="reminder:cancel"),
+                    flex=1,
+                ),
+            ],
+        ),
+    )
+    return FlexMessage(alt_text=f"確認提醒：{when_text}", contents=bubble)
 
 
 def build_conflict_flex(conflicts: list[dict], pending: PendingEvent) -> FlexMessage:
@@ -709,3 +765,20 @@ def _send(label: str, events: list[dict]):
                 PushMessageRequest(to=user_id, messages=[flex_msg])
             )
     print(f"[LINE] 已發送 Flex Message：{label}（{len(user_ids)} 人）")
+
+
+def send_single_reminder(user_id: str, reminder_text: str, remind_at: datetime) -> None:
+    """發送單一使用者提醒訊息。"""
+    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"].strip()
+    msg = (
+        "⏰ 提醒時間到！\n"
+        f"時間：{remind_at.strftime('%Y/%m/%d %H:%M')}\n"
+        f"內容：{reminder_text}"
+    )
+    config = Configuration(access_token=token)
+    with ApiClient(config) as client:
+        api = MessagingApi(client)
+        api.push_message(
+            PushMessageRequest(to=user_id, messages=[TextMessage(text=msg)])
+        )
+    print(f"[LINE] 已發送提醒給 {user_id}")
