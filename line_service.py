@@ -234,6 +234,90 @@ def build_reminder_confirmation_flex(remind_at: datetime, reminder_text: str) ->
     return FlexMessage(alt_text=f"確認提醒：{when_text}", contents=bubble)
 
 
+def build_cc_reminder_confirmation_flex(banks: list[dict], remind_time: str) -> FlexMessage:
+    """建立每月卡費提醒確認卡片。"""
+    bank_rows = []
+    for b in banks:
+        bank_rows.append(
+            FlexBox(
+                type="box",
+                layout="horizontal",
+                spacing="sm",
+                contents=[
+                    FlexText(type="text", text="💳", size="sm", flex=0),
+                    FlexText(
+                        type="text",
+                        text=b["name"],
+                        size="sm",
+                        weight="bold",
+                        color="#333333",
+                        flex=1,
+                    ),
+                    FlexText(
+                        type="text",
+                        text=f"每月 {b['day']} 日",
+                        size="sm",
+                        color="#666666",
+                        flex=0,
+                        align="end",
+                    ),
+                ],
+            )
+        )
+
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box",
+            layout="vertical",
+            background_color="#2C7BE5",
+            padding_all="16px",
+            contents=[
+                FlexText(
+                    type="text",
+                    text="💳 確認設定每月卡費提醒？",
+                    color="#ffffff",
+                    size="md",
+                    weight="bold",
+                )
+            ],
+        ),
+        body=FlexBox(
+            type="box",
+            layout="vertical",
+            spacing="md",
+            padding_all="16px",
+            contents=[
+                _info_row("⏰", f"提醒時間：{remind_time}"),
+                FlexSeparator(type="separator", margin="md"),
+                *bank_rows,
+            ],
+        ),
+        footer=FlexBox(
+            type="box",
+            layout="horizontal",
+            spacing="sm",
+            padding_all="12px",
+            contents=[
+                FlexButton(
+                    type="button",
+                    style="primary",
+                    color="#27AE60",
+                    action=PostbackAction(label="✅ 確認設定", data="cc_remind:confirm"),
+                    flex=1,
+                ),
+                FlexButton(
+                    type="button",
+                    style="secondary",
+                    action=PostbackAction(label="❌ 取消", data="cc_remind:cancel"),
+                    flex=1,
+                ),
+            ],
+        ),
+    )
+    return FlexMessage(alt_text="確認設定每月卡費提醒？", contents=bubble)
+
+
 def build_reminder_arrived_flex(remind_at: datetime, reminder_text: str) -> FlexMessage:
     """到點推播用的提醒卡片（與確認卡風格一致、易讀）。"""
     wk = _WEEKDAY_ZH[remind_at.weekday()]

@@ -5,6 +5,7 @@ LINE Webhook：接收使用者文字訊息並寫入 Google Calendar。
 環境變數：LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET、LINE_USER_IDS、TIMEZONE
 """
 
+import calendar as _calendar
 import json
 import os
 import re
@@ -179,6 +180,18 @@ def _time_quick_reply() -> QuickReply:
     return QuickReply(items=items)
 
 
+def _cc_time_quick_reply() -> QuickReply:
+    slots = ["08:00", "09:00", "10:00", "11:00", "12:00",
+             "13:00", "15:00", "18:00", "20:00"]
+    items = [
+        QuickReplyItem(
+            action=PostbackAction(label=t, data=f"cc_remind:time:{t}")
+        )
+        for t in slots
+    ]
+    return QuickReply(items=items)
+
+
 def _reminder_time_quick_reply() -> QuickReply:
     slots = ["08:00", "09:00", "10:00", "11:00", "12:00",
              "13:00", "14:00", "15:00", "16:00", "18:00", "20:00"]
@@ -277,7 +290,62 @@ def _extract_postback_date(event: PostbackEvent) -> str:
     return date_str
 
 
-def _create_reminder_task(user_id: str, remind_at: datetime, reminder_text: str) -> str:
+def _parse_bank_entries(text: str) -> list[dict] | None:
+    """解析銀行繳費日輸入，格式：每行「銀行名稱 日期」。"""
+    lines = [l.strip() for l in re.split(r"[\n,，]", text) if l.strip()]
+    if not lines:
+        return None
+    entries = []
+    for line in lines:
+        m = re.match(r"^(.+?)\s+(\d{1,2})號?$", line)
+        if not m:
+            return None
+        day = int(m.group(2))
+        if not 1 <= day <= 31:
+            return None
+        entries.append({"name": m.group(1).strip(), "day": day})
+    return entries or None
+
+
+def _next_monthly_occurrence(day_of_month: int, remind_time: str, tz: ZoneInfo) -> datetime:
+    """計算下一個月繳費日（若本月尚未到則用本月，否則用下月）。"""
+    now = datetime.now(tz)
+    h, mi = map(int, remind_time.split(":"))
+    last_day = _calendar.monthrange(now.year, now.month)[1]
+    actual_day = min(day_of_month, last_day)
+    candidate = datetime(now.year, now.month, actual_day, h, mi, tzinfo=tz)
+    if candidate > now:
+        return candidate
+    next_month = now.month + 1
+    next_year = now.year
+    if next_month > 12:
+        next_month, next_year = 1, now.year + 1
+    last_day = _calendar.monthrange(next_year, next_month)[1]
+    actual_day = min(day_of_month, last_day)
+    return datetime(next_year, next_month, actual_day, h, mi, tzinfo=tz)
+
+
+def _next_month_from(from_dt: datetime, day_of_month: int, remind_time: str, tz: ZoneInfo) -> datetime:
+    """從給定時間往後推一個月，取指定日期。"""
+    next_month = from_dt.month + 1
+    next_year = from_dt.year
+    if next_month > 12:
+        next_month, next_year = 1, from_dt.year + 1
+    h, mi = map(int, remind_time.split(":"))
+    last_day = _calendar.monthrange(next_year, next_month)[1]
+    actual_day = min(day_of_month, last_day)
+    return datetime(next_year, next_month, actual_day, h, mi, tzinfo=tz)
+
+
+def _create_reminder_task(
+    user_id: str,
+    remind_at: datetime,
+    reminder_text: str,
+    *,
+    recurring: bool = False,
+    day_of_month: int | None = None,
+    remind_time: str | None = None,
+) -> str:
     if not ENABLE_REMINDER:
         raise RuntimeError("提醒功能未啟用（ENABLE_REMINDER=false）")
     if not GCP_PROJECT_ID:
@@ -296,6 +364,10 @@ def _create_reminder_task(user_id: str, remind_at: datetime, reminder_text: str)
         "reminder_text": reminder_text,
         "remind_at": remind_at.isoformat(),
     }
+    if recurring and day_of_month and remind_time:
+        payload["recurring"] = True
+        payload["day_of_month"] = day_of_month
+        payload["remind_time"] = remind_time
     schedule_time = Timestamp()
     schedule_time.FromDatetime(remind_at.astimezone(timezone.utc))
 
@@ -446,6 +518,41 @@ def _handle_wizard_text(uid: str, text: str, reply_token: str, pending: PendingE
             line_service.build_reminder_confirmation_flex(remind_at, reminder_text),
         )
 
+    elif step == "cc_remind_banks":
+        banks = _parse_bank_entries(text)
+        if not banks:
+            _reply_text(
+                reply_token,
+                "格式不正確，請重新輸入。\n\n"
+                "格式：銀行名稱 截止日（每行一筆）\n\n"
+                "範例：\n國泰 15\n玉山 20\n台北富邦 25",
+            )
+            return
+        pending.cc_banks = banks
+        pending.step = "cc_remind_time"
+        set_session(uid, pending)
+        preview = "\n".join(f"• {b['name']}（每月{b['day']}日）" for b in banks)
+        _reply_text_with_qr(
+            reply_token,
+            f"已記錄 {len(banks)} 家銀行：\n{preview}\n\n請選擇每月提醒時間：",
+            _cc_time_quick_reply(),
+        )
+
+    elif step == "cc_remind_time":
+        m = re.match(r"^(\d{1,2}):(\d{2})$", text.strip())
+        if m:
+            h, mi = int(m.group(1)), int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                time_val = f"{h:02d}:{mi:02d}"
+                pending.reminder_time = time_val
+                pending.step = "cc_remind_confirm"
+                set_session(uid, pending)
+                _reply_flex(reply_token, line_service.build_cc_reminder_confirmation_flex(pending.cc_banks, time_val))
+            else:
+                _reply_text(reply_token, "時間無效，請輸入 HH:MM（例：09:00）或點選上方按鈕。")
+        else:
+            _reply_text(reply_token, "請輸入時間格式 HH:MM（例：09:00）或點選上方按鈕。")
+
     else:
         _reply_text(reply_token, "無法解析。\n\n" + event_parser.USAGE_HELP)
 
@@ -488,6 +595,18 @@ def _on_text(event: MessageEvent):
         delete_session(uid)
         set_session(uid, PendingEvent(step="reminder_date"))
         _reply_text_with_qr(event.reply_token, "請選擇提醒日期：", _reminder_date_quick_reply())
+        return
+
+    if ENABLE_REMINDER and text in ("卡費提醒", "繳卡費", "信用卡提醒", "月繳提醒"):
+        delete_session(uid)
+        set_session(uid, PendingEvent(step="cc_remind_banks"))
+        _reply_text(
+            event.reply_token,
+            "💳 設定每月卡費提醒\n\n"
+            "請輸入各家銀行的繳費截止日\n"
+            "格式：銀行名稱 截止日（每行一筆）\n\n"
+            "範例：\n國泰 15\n玉山 20\n台北富邦 25",
+        )
         return
 
     view_date = _try_parse_view(text)
@@ -695,6 +814,59 @@ def _on_postback(event: PostbackEvent):
         set_session(uid, pending)
         _reply_text(reply_token, "請輸入提醒內容：")
 
+    # ── 卡費提醒精靈：選時間 ───────────────────────────────────────────────────
+    elif data.startswith("cc_remind:time:"):
+        time_val = data[15:]
+        pending = get_session(uid)
+        if not pending:
+            _reply_text(reply_token, "⚠️ 操作逾時，請重新輸入「卡費提醒」。")
+            return
+        pending.reminder_time = time_val
+        pending.step = "cc_remind_confirm"
+        set_session(uid, pending)
+        _reply_flex(reply_token, line_service.build_cc_reminder_confirmation_flex(pending.cc_banks, time_val))
+
+    # ── 卡費提醒精靈：確認建立 ─────────────────────────────────────────────────
+    elif data == "cc_remind:confirm":
+        pending = get_session(uid)
+        if not pending or pending.step != "cc_remind_confirm":
+            _reply_text(reply_token, "⚠️ 操作逾時，請重新輸入「卡費提醒」。")
+            delete_session(uid)
+            return
+        banks = pending.cc_banks
+        remind_time = pending.reminder_time
+        if not banks or not remind_time:
+            _reply_text(reply_token, "⚠️ 資料不完整，請重新輸入「卡費提醒」。")
+            delete_session(uid)
+            return
+        created, failed = [], []
+        for bank in banks:
+            try:
+                remind_at = _next_monthly_occurrence(bank["day"], remind_time, tz)
+                task_text = f"💳 {bank['name']} 卡費繳款提醒"
+                _create_reminder_task(
+                    uid, remind_at, task_text,
+                    recurring=True, day_of_month=bank["day"], remind_time=remind_time,
+                )
+                created.append(bank)
+            except Exception as e:
+                failed.append((bank["name"], str(e)))
+        delete_session(uid)
+        if failed:
+            fail_lines = "\n".join(f"• {name}: {err}" for name, err in failed)
+            _reply_text(reply_token, f"⚠️ 部分建立失敗：\n{fail_lines}")
+        else:
+            lines = "\n".join(f"• {b['name']}（每月{b['day']}日）" for b in created)
+            _reply_text(
+                reply_token,
+                f"✅ 卡費提醒已建立！\n\n{lines}\n\n提醒時間：{remind_time}\n每月自動發送 💳",
+            )
+
+    # ── 卡費提醒精靈：取消 ─────────────────────────────────────────────────────
+    elif data == "cc_remind:cancel":
+        delete_session(uid)
+        _reply_text(reply_token, "已取消。")
+
     # ── 提醒精靈：確認建立 ─────────────────────────────────────────────────────
     elif data == "reminder:confirm":
         pending = get_session(uid)
@@ -784,6 +956,22 @@ def tasks_reminder():
         remind_at = datetime.now(ZoneInfo(TIMEZONE))
 
     line_service.send_single_reminder(user_id, reminder_text, remind_at)
+
+    recurring = bool(payload.get("recurring", False))
+    day_of_month = payload.get("day_of_month")
+    remind_time = str(payload.get("remind_time", "")).strip()
+    if recurring and day_of_month and remind_time:
+        try:
+            tz = ZoneInfo(TIMEZONE)
+            next_dt = _next_month_from(remind_at, int(day_of_month), remind_time, tz)
+            _create_reminder_task(
+                user_id, next_dt, reminder_text,
+                recurring=True, day_of_month=int(day_of_month), remind_time=remind_time,
+            )
+            print(f"[Tasks] 自動重排下月提醒：{next_dt.isoformat()}")
+        except Exception as e:
+            print(f"[WARN] 自動重排失敗：{e}")
+
     return "OK", 200
 
 
