@@ -23,9 +23,9 @@ class PendingEvent:
     #   "reminder_time"  — 提醒精靈：選時間
     #   "reminder_text"  — 提醒精靈：輸入提醒內容
     #   "reminder_confirm"— 提醒精靈：確認建立
-    #   "cc_remind_banks"— 卡費提醒精靈：輸入銀行清單
-    #   "cc_remind_time" — 卡費提醒精靈：選提醒時間
-    #   "cc_remind_confirm"— 卡費提醒精靈：確認建立
+    #   "monthly_remind_items" — 每月提醒精靈：輸入項目清單
+    #   "monthly_remind_time"  — 每月提醒精靈：選提醒時間
+    #   "monthly_remind_confirm" — 每月提醒精靈：確認建立
     summary: Optional[str] = None
     start: Optional[datetime] = None
     end: Optional[datetime] = None
@@ -36,7 +36,7 @@ class PendingEvent:
     reminder_date: Optional[str] = None  # "YYYY-MM-DD"
     reminder_time: str = ""              # "HH:MM"
     reminder_text: str = ""
-    cc_banks: list = field(default_factory=list)  # [{"name": str, "day": int}, ...]
+    monthly_items: list = field(default_factory=list)  # [{"name": str, "day": int}, ...]
     expires_at: datetime = field(
         default_factory=lambda: datetime.now() + timedelta(minutes=10)
     )
