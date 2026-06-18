@@ -220,6 +220,54 @@ def create_timed_event(
     return service.events().insert(calendarId="primary", body=body).execute()
 
 
+def get_event(event_id: str) -> dict:
+    """取得單一行程，回傳解析後的事件 dict。"""
+    creds = get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+    raw = service.events().get(calendarId="primary", eventId=event_id).execute()
+    tz = ZoneInfo("Asia/Taipei")
+    return _parse_event(raw, tz)
+
+
+def update_event(
+    event_id: str,
+    summary: str,
+    start: datetime | None,
+    end: datetime | None,
+    timezone_str: str = "Asia/Taipei",
+    location: str = "",
+    is_all_day: bool = False,
+    all_day_date: str = "",
+) -> dict:
+    """更新行程（patch），回傳更新後事件 dict。"""
+    creds = get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+    body: dict = {"summary": summary}
+    if is_all_day:
+        body["start"] = {"date": all_day_date}
+        body["end"]   = {"date": all_day_date}
+    else:
+        tz = ZoneInfo(timezone_str)
+        if start and start.tzinfo is None:
+            start = start.replace(tzinfo=tz)
+        if end and end.tzinfo is None:
+            end = end.replace(tzinfo=tz)
+        body["start"] = {"dateTime": start.isoformat(), "timeZone": timezone_str}
+        body["end"]   = {"dateTime": end.isoformat(),   "timeZone": timezone_str}
+    if location is not None:
+        body["location"] = location
+    return service.events().patch(
+        calendarId="primary", eventId=event_id, body=body
+    ).execute()
+
+
+def delete_event(event_id: str) -> None:
+    """刪除行程。"""
+    creds = get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+    service.events().delete(calendarId="primary", eventId=event_id).execute()
+
+
 def create_all_day_event(
     summary: str,
     date_str: str,

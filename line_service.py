@@ -19,6 +19,9 @@ from linebot.v3.messaging import (
     FlexCarousel,
 )
 
+_LIFF_FORM_ID     = os.getenv("LIFF_FORM_ID", "").strip()
+_LIFF_CALENDAR_ID = os.getenv("LIFF_CALENDAR_ID", "").strip()
+
 from session_store import PendingEvent
 
 _WEEKDAY_ZH = ("週一", "週二", "週三", "週四", "週五", "週六", "週日")
@@ -121,9 +124,87 @@ def build_confirmation_flex(pending: PendingEvent) -> FlexMessage:
     return FlexMessage(alt_text="確認新增行程？", contents=bubble)
 
 
-def build_success_flex(pending: PendingEvent, link: str) -> FlexMessage:
+def build_event_notification_flex(raw_event: dict, is_update: bool = False) -> FlexMessage:
+    """LIFF 建立/更新行程後，由 bot 推送的通知卡片。raw_event 為 Google Calendar API 回應。"""
+    title  = "✅ 行程已更新" if is_update else "✅ 行程已建立"
+    color  = "#2980B9" if is_update else "#27AE60"
+    summary = raw_event.get("summary", "（無標題）")
+    link    = raw_event.get("htmlLink", "")
+    event_id = raw_event.get("id", "")
+
+    start = raw_event.get("start", {})
+    end   = raw_event.get("end", {})
+    if "date" in start:
+        time_str = f"{start['date']}（全天）"
+    else:
+        dt_s = start.get("dateTime", "")
+        dt_e = end.get("dateTime", "")
+        if dt_s and dt_e:
+            from datetime import datetime as _dt
+            from zoneinfo import ZoneInfo as _ZI
+            tz = _ZI("Asia/Taipei")
+            s = _dt.fromisoformat(dt_s).astimezone(tz)
+            e = _dt.fromisoformat(dt_e).astimezone(tz)
+            time_str = f"{s.strftime('%Y/%m/%d %H:%M')} – {e.strftime('%H:%M')}"
+        else:
+            time_str = dt_s[:16].replace("T", " ") if dt_s else ""
+    location = raw_event.get("location", "")
+
+    body_rows = [_info_row("📌", summary, bold=True), _info_row("🕐", time_str)]
+    if location:
+        body_rows.append(_info_row("📍", location))
+
+    footer_btns = []
+    if _LIFF_FORM_ID and event_id:
+        footer_btns.append(FlexButton(
+            type="button", style="secondary", height="sm", flex=1,
+            action=URIAction(label="✏️ 編輯", uri=f"https://liff.line.me/{_LIFF_FORM_ID}?event_id={event_id}"),
+        ))
+    if _LIFF_CALENDAR_ID:
+        footer_btns.append(FlexButton(
+            type="button", style="primary", color="#4A90E2", height="sm", flex=1,
+            action=URIAction(label="查看行事曆", uri=f"https://liff.line.me/{_LIFF_CALENDAR_ID}"),
+        ))
+    elif link:
+        footer_btns.append(FlexButton(
+            type="button", style="primary", color="#4A90E2", height="sm", flex=1,
+            action=URIAction(label="查看行事曆", uri=link),
+        ))
+
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box", layout="vertical", background_color=color, padding_all="14px",
+            contents=[FlexText(type="text", text=title, color="#ffffff", size="md", weight="bold")],
+        ),
+        body=FlexBox(
+            type="box", layout="vertical", spacing="sm", padding_all="14px",
+            contents=body_rows,
+        ),
+        footer=FlexBox(
+            type="box", layout="horizontal", spacing="sm", padding_all="12px",
+            contents=footer_btns,
+        ) if footer_btns else None,
+    )
+    return FlexMessage(alt_text=f"{title}：{summary}", contents=bubble)
+
+
+def build_success_flex(pending: PendingEvent, link: str, event_id: str = "") -> FlexMessage:
     """建立成功卡片（含「查看行事曆」「繼續新增」按鈕）。"""
     footer_contents = []
+    if _LIFF_FORM_ID and event_id:
+        footer_contents.append(
+            FlexButton(
+                type="button",
+                style="secondary",
+                height="sm",
+                action=URIAction(
+                    label="✏️ 編輯",
+                    uri=f"https://liff.line.me/{_LIFF_FORM_ID}?event_id={event_id}",
+                ),
+                flex=1,
+            )
+        )
     if link:
         footer_contents.append(
             FlexButton(
@@ -177,6 +258,49 @@ def build_success_flex(pending: PendingEvent, link: str) -> FlexMessage:
     )
     summary = pending.summary or "行程"
     return FlexMessage(alt_text=f"✅ 已建立：{summary}", contents=bubble)
+
+
+def build_delete_confirm_flex(event_id: str) -> FlexMessage:
+    """建立刪除行程確認卡片。"""
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box",
+            layout="vertical",
+            background_color="#E74C3C",
+            padding_all="16px",
+            contents=[
+                FlexText(type="text", text="🗑 確認刪除行程？", color="#ffffff", size="md", weight="bold")
+            ],
+        ),
+        body=FlexBox(
+            type="box",
+            layout="vertical",
+            padding_all="16px",
+            contents=[
+                FlexText(type="text", text="此操作無法復原，確定要刪除嗎？", size="sm", color="#666666", wrap=True)
+            ],
+        ),
+        footer=FlexBox(
+            type="box",
+            layout="horizontal",
+            spacing="sm",
+            padding_all="12px",
+            contents=[
+                FlexButton(
+                    type="button", style="primary", color="#E74C3C",
+                    action=PostbackAction(label="確認刪除", data=f"delete_confirm:{event_id}"),
+                    flex=1,
+                ),
+                FlexButton(
+                    type="button", style="secondary",
+                    action=PostbackAction(label="取消", data="cancel"),
+                    flex=1,
+                ),
+            ],
+        ),
+    )
+    return FlexMessage(alt_text="確認刪除行程？", contents=bubble)
 
 
 def build_reminder_confirmation_flex(remind_at: datetime, reminder_text: str) -> FlexMessage:
@@ -591,6 +715,42 @@ def build_event_list_flex(events: list[dict], date: datetime) -> FlexMessage:
                             margin="sm",
                         ),
                     ],
+                )
+            )
+
+        event_id = event.get("event_id", "")
+        action_btns = []
+        if _LIFF_FORM_ID and event_id:
+            action_btns.append(
+                FlexButton(
+                    type="button",
+                    style="secondary",
+                    height="sm",
+                    action=URIAction(
+                        label="✏️ 編輯",
+                        uri=f"https://liff.line.me/{_LIFF_FORM_ID}?event_id={event_id}",
+                    ),
+                    flex=1,
+                )
+            )
+        if event_id:
+            action_btns.append(
+                FlexButton(
+                    type="button",
+                    style="secondary",
+                    height="sm",
+                    action=PostbackAction(label="🗑 刪除", data=f"delete_event:{event_id}"),
+                    flex=1,
+                )
+            )
+        if action_btns:
+            event_rows.append(
+                FlexBox(
+                    type="box",
+                    layout="horizontal",
+                    spacing="sm",
+                    margin="sm",
+                    contents=action_btns,
                 )
             )
 

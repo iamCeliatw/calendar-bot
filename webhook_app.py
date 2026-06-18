@@ -6,14 +6,17 @@ LINE Webhook：接收使用者文字訊息並寫入 Google Calendar。
 """
 
 import calendar as _calendar
+import functools
 import json
 import os
 import re
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import requests
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask, abort, jsonify, request, send_from_directory
 from google.cloud import tasks_v2
 from google.protobuf.timestamp_pb2 import Timestamp
 from linebot.v3 import WebhookHandler
@@ -23,6 +26,7 @@ from linebot.v3.messaging import (
     Configuration,
     MessagingApi,
     ReplyMessageRequest,
+    PushMessageRequest,
     TextMessage,
     FlexMessage,
     QuickReply,
@@ -30,12 +34,14 @@ from linebot.v3.messaging import (
     PostbackAction,
     MessageAction,
     DatetimePickerAction,
+    URIAction,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 
 import calendar_service
 import event_parser
 import line_service
+import reminder_store
 from session_store import PendingEvent, get_session, set_session, delete_session
 
 load_dotenv()
@@ -51,6 +57,17 @@ GCP_LOCATION         = os.getenv("GCP_LOCATION", "asia-east1").strip()
 REMINDER_TASK_QUEUE  = os.getenv("REMINDER_TASK_QUEUE", "calendar-reminder-queue").strip()
 TASK_HANDLER_URL     = os.getenv("TASK_HANDLER_URL", "").strip()
 REMINDER_TASK_TOKEN  = os.getenv("REMINDER_TASK_TOKEN", "").strip()
+LIFF_CALENDAR_ID     = os.getenv("LIFF_CALENDAR_ID", "").strip()
+LIFF_FORM_ID         = os.getenv("LIFF_FORM_ID", "").strip()
+LIFF_REMINDER_ID     = os.getenv("LIFF_REMINDER_ID", "").strip()
+
+for _liff_var, _liff_name in [
+    (LIFF_CALENDAR_ID, "LIFF_CALENDAR_ID"),
+    (LIFF_FORM_ID,     "LIFF_FORM_ID"),
+    (LIFF_REMINDER_ID, "LIFF_REMINDER_ID"),
+]:
+    if not _liff_var:
+        print(f"[WARNING] {_liff_name} 未設定，LIFF 相關功能將降級")
 
 _allowed_ids: frozenset[str] | None = None
 _user_names: dict[str, str] = {}
@@ -81,6 +98,39 @@ def _prefixed(summary: str, uid: str) -> str:
     return f"【{name}】{summary}" if name else summary
 
 
+# ── LIFF API 驗證 ─────────────────────────────────────────────────────────────
+
+def _verify_liff_token(auth_header: str) -> str:
+    """驗證 LIFF Access Token，回傳 userId 或 raise abort(401/403)。"""
+    if not auth_header or not auth_header.startswith("Bearer "):
+        abort(401, description="Unauthorized")
+    token = auth_header[7:]
+    try:
+        resp = requests.get(
+            "https://api.line.me/v2/profile",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+    except requests.RequestException:
+        abort(401, description="Unauthorized")
+    if resp.status_code != 200:
+        abort(401, description="Unauthorized")
+    user_id = resp.json().get("userId", "")
+    if user_id not in _get_allowed_ids():
+        abort(403, description="Forbidden")
+    return user_id
+
+
+def require_liff_auth(f):
+    """Flask decorator：驗證 LIFF Access Token 並將 user_id 注入 kwargs。"""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        uid = _verify_liff_token(request.headers.get("Authorization", ""))
+        kwargs["liff_user_id"] = uid
+        return f(*args, **kwargs)
+    return decorated
+
+
 handler = WebhookHandler(CHANNEL_SECRET)
 
 
@@ -104,6 +154,18 @@ def _reply_flex(reply_token: str, flex: FlexMessage) -> None:
 
 def _reply_text_with_qr(reply_token: str, text: str, quick_reply: QuickReply) -> None:
     _reply(reply_token, [TextMessage(text=text, quick_reply=quick_reply)])
+
+
+def _push(user_id: str, messages: list) -> None:
+    config = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+    with ApiClient(config) as client:
+        MessagingApi(client).push_message(
+            PushMessageRequest(to=user_id, messages=messages)
+        )
+
+
+def _push_flex(user_id: str, flex: FlexMessage) -> None:
+    _push(user_id, [flex])
 
 
 # ── 精靈用 Quick Reply 建構 ────────────────────────────────────────────────────
@@ -410,8 +472,9 @@ def _do_create_event(pending: PendingEvent, reply_token: str) -> None:
                 TIMEZONE,
                 pending.location,
             )
-        link = created.get("htmlLink", "")
-        _reply_flex(reply_token, line_service.build_success_flex(pending, link))
+        link     = created.get("htmlLink", "")
+        event_id = created.get("id", "")
+        _reply_flex(reply_token, line_service.build_success_flex(pending, link, event_id))
     except Exception as e:
         _reply_text(reply_token, f"寫入日曆失敗：{e}")
 
@@ -844,10 +907,19 @@ def _on_postback(event: PostbackEvent):
             try:
                 remind_at = _next_monthly_occurrence(bank["day"], remind_time, tz)
                 task_text = f"💳 {bank['name']} 卡費繳款提醒"
-                _create_reminder_task(
+                task_name = _create_reminder_task(
                     uid, remind_at, task_text,
                     recurring=True, day_of_month=bank["day"], remind_time=remind_time,
                 )
+                reminder_store.append_reminder({
+                    "task_name":     task_name,
+                    "user_id":       uid,
+                    "remind_at":     remind_at.isoformat(),
+                    "reminder_text": task_text,
+                    "recurring":     True,
+                    "day_of_month":  bank["day"],
+                    "remind_time":   remind_time,
+                })
                 created.append(bank)
             except Exception as e:
                 failed.append((bank["name"], str(e)))
@@ -866,6 +938,21 @@ def _on_postback(event: PostbackEvent):
     elif data == "cc_remind:cancel":
         delete_session(uid)
         _reply_text(reply_token, "已取消。")
+
+    # ── 行程刪除：第一次點擊 → 確認卡片 ──────────────────────────────────────
+    elif data.startswith("delete_event:"):
+        event_id = data[13:]
+        confirm_bubble = line_service.build_delete_confirm_flex(event_id)
+        _reply_flex(reply_token, confirm_bubble)
+
+    # ── 行程刪除：確認刪除 ────────────────────────────────────────────────────
+    elif data.startswith("delete_confirm:"):
+        event_id = data[15:]
+        try:
+            calendar_service.delete_event(event_id)
+            _reply_text(reply_token, "🗑 行程已刪除。")
+        except Exception as e:
+            _reply_text(reply_token, f"刪除失敗：{e}")
 
     # ── 提醒精靈：確認建立 ─────────────────────────────────────────────────────
     elif data == "reminder:confirm":
@@ -895,6 +982,13 @@ def _on_postback(event: PostbackEvent):
             _reply_text(reply_token, f"建立提醒失敗：{e}")
             return
 
+        reminder_store.append_reminder({
+            "task_name":     task_name,
+            "user_id":       uid,
+            "remind_at":     remind_at.isoformat(),
+            "reminder_text": reminder_text,
+            "recurring":     False,
+        })
         delete_session(uid)
         _reply_text(
             reply_token,
@@ -906,6 +1000,26 @@ def _on_postback(event: PostbackEvent):
 
 
 # ── Flask 路由 ────────────────────────────────────────────────────────────────
+
+_LIFF_PAGES = {"calendar", "event-form", "reminder-manager"}
+
+
+@app.route("/liff/<page>", methods=["GET"])
+def liff_page(page: str):
+    if page not in _LIFF_PAGES:
+        return "Not Found", 404
+    liff_dir = os.path.join(os.path.dirname(__file__), "liff")
+    try:
+        with open(os.path.join(liff_dir, f"{page}.html"), "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return "Not Found", 404
+    content = (content
+        .replace("{{LIFF_CALENDAR_ID}}", LIFF_CALENDAR_ID)
+        .replace("{{LIFF_FORM_ID}}", LIFF_FORM_ID)
+        .replace("{{LIFF_REMINDER_ID}}", LIFF_REMINDER_ID))
+    return content, 200, {"Content-Type": "text/html; charset=utf-8"}
+
 
 @app.route("/callback", methods=["GET"])
 def callback_probe():
@@ -933,6 +1047,249 @@ def callback():
 @app.route("/health", methods=["GET", "POST"])
 def health():
     return "ok", 200
+
+
+# ── LIFF JSON API ─────────────────────────────────────────────────────────────
+
+def _parse_event_body(data: dict, tz: ZoneInfo):
+    """從 LIFF 表單 body 解析行程欄位，回傳 (summary, start_dt, end_dt, is_all_day, date_str, location)。"""
+    summary    = str(data.get("summary", "")).strip()
+    date_str   = str(data.get("date", "")).strip()
+    is_all_day = bool(data.get("is_all_day", False))
+    location   = str(data.get("location", "")).strip()
+    start_dt = end_dt = None
+    if not is_all_day:
+        st = str(data.get("start_time", "09:00"))
+        et = str(data.get("end_time",   "10:00"))
+        y, mo, d = map(int, date_str.split("-"))
+        sh, sm   = map(int, st.split(":"))
+        eh, em   = map(int, et.split(":"))
+        start_dt = datetime(y, mo, d, sh, sm, tzinfo=tz)
+        end_dt   = datetime(y, mo, d, eh, em, tzinfo=tz)
+    return summary, start_dt, end_dt, is_all_day, date_str, location
+
+
+@app.route("/api/events", methods=["GET"])
+@require_liff_auth
+def api_events_list(liff_user_id: str):
+    tz  = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    try:
+        year  = int(request.args.get("year",  now.year))
+        month = int(request.args.get("month", now.month))
+    except ValueError:
+        year, month = now.year, now.month
+    start = datetime(year, month, 1, tzinfo=tz)
+    import calendar as _cal
+    last_day = _cal.monthrange(year, month)[1]
+    end = datetime(year, month, last_day, 23, 59, 59, tzinfo=tz) + timedelta(seconds=1)
+    events_by_day = calendar_service.get_events_for_days(start, end, TIMEZONE)
+    result = []
+    for day_evs in events_by_day.values():
+        for ev in day_evs:
+            result.append({
+                "event_id":   ev["event_id"],
+                "summary":    ev["summary"],
+                "start":      ev["start_time"].isoformat() if ev["start_time"] else None,
+                "end":        ev["end_time"].isoformat()   if ev["end_time"]   else None,
+                "is_all_day": ev["is_all_day"],
+                "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
+                "location":   ev["location"],
+            })
+    result.sort(key=lambda x: x["start"] or x["date"] or "")
+    return jsonify(result), 200
+
+
+@app.route("/api/events/<event_id>", methods=["GET"])
+@require_liff_auth
+def api_event_get(event_id: str, liff_user_id: str):
+    try:
+        ev = calendar_service.get_event(event_id)
+    except Exception:
+        return jsonify({"error": "Event not found"}), 404
+    return jsonify({
+        "event_id":   ev["event_id"],
+        "summary":    ev["summary"],
+        "start":      ev["start_time"].isoformat() if ev["start_time"] else None,
+        "end":        ev["end_time"].isoformat()   if ev["end_time"]   else None,
+        "is_all_day": ev["is_all_day"],
+        "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
+        "location":   ev["location"],
+    }), 200
+
+
+@app.route("/api/events", methods=["POST"])
+@require_liff_auth
+def api_events_create(liff_user_id: str):
+    data = request.get_json(silent=True) or {}
+    tz   = ZoneInfo(TIMEZONE)
+    summary, start_dt, end_dt, is_all_day, date_str, location = _parse_event_body(data, tz)
+    if not summary or not date_str:
+        return jsonify({"error": "missing required fields"}), 400
+    try:
+        if is_all_day:
+            created = calendar_service.create_all_day_event(summary, date_str, TIMEZONE, location)
+        else:
+            created = calendar_service.create_timed_event(summary, start_dt, end_dt, TIMEZONE, location)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    try:
+        _push_flex(liff_user_id, line_service.build_event_notification_flex(created, is_update=False))
+    except Exception as e:
+        print(f"[WARN] push flex failed: {e}")
+    return jsonify({"event_id": created.get("id", ""), "htmlLink": created.get("htmlLink", "")}), 201
+
+
+@app.route("/api/events/<event_id>", methods=["PUT"])
+@require_liff_auth
+def api_event_update(event_id: str, liff_user_id: str):
+    data = request.get_json(silent=True) or {}
+    tz   = ZoneInfo(TIMEZONE)
+    summary, start_dt, end_dt, is_all_day, date_str, location = _parse_event_body(data, tz)
+    try:
+        updated = calendar_service.update_event(
+            event_id, summary, start_dt, end_dt, TIMEZONE, location,
+            is_all_day=is_all_day, all_day_date=date_str,
+        )
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "notFound" in msg:
+            return jsonify({"error": "Event not found"}), 404
+        return jsonify({"error": msg}), 500
+    try:
+        _push_flex(liff_user_id, line_service.build_event_notification_flex(updated, is_update=True))
+    except Exception as e:
+        print(f"[WARN] push flex failed: {e}")
+    return jsonify({"event_id": updated.get("id", ""), "summary": updated.get("summary", "")}), 200
+
+
+@app.route("/api/events/<event_id>", methods=["DELETE"])
+@require_liff_auth
+def api_event_delete(event_id: str, liff_user_id: str):
+    try:
+        calendar_service.delete_event(event_id)
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "notFound" in msg:
+            return jsonify({"error": "Event not found"}), 404
+        return jsonify({"error": msg}), 500
+    return "", 204
+
+
+# ── LIFF Reminder API ──────────────────────────────────────────────────────────
+
+@app.route("/api/reminders", methods=["GET"])
+@require_liff_auth
+def api_reminders_list(liff_user_id: str):
+    tz  = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    all_records = reminder_store.list_reminders(liff_user_id)
+    future = [r for r in all_records if datetime.fromisoformat(r["remind_at"]) > now]
+    future.sort(key=lambda r: r["remind_at"])
+    return jsonify(future), 200
+
+
+@app.route("/api/reminders", methods=["POST"])
+@require_liff_auth
+def api_reminders_create(liff_user_id: str):
+    data          = request.get_json(silent=True) or {}
+    remind_at_raw = str(data.get("remind_at", "")).strip()
+    reminder_text = str(data.get("reminder_text", "")).strip()
+    if not remind_at_raw or not reminder_text:
+        return jsonify({"error": "missing required fields"}), 400
+    try:
+        remind_at = datetime.fromisoformat(remind_at_raw)
+    except ValueError:
+        return jsonify({"error": "invalid remind_at format"}), 400
+    tz  = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    if remind_at.tzinfo is None:
+        remind_at = remind_at.replace(tzinfo=tz)
+    if remind_at <= now:
+        return jsonify({"error": "remind_at must be in the future"}), 400
+    try:
+        task_name = _create_reminder_task(liff_user_id, remind_at, reminder_text)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    record = {
+        "task_name":     task_name,
+        "user_id":       liff_user_id,
+        "remind_at":     remind_at.isoformat(),
+        "reminder_text": reminder_text,
+        "recurring":     False,
+    }
+    reminder_store.append_reminder(record)
+    return jsonify(record), 201
+
+
+@app.route("/api/reminders/<path:task_name_encoded>", methods=["PUT"])
+@require_liff_auth
+def api_reminders_update(task_name_encoded: str, liff_user_id: str):
+    task_name     = urllib.parse.unquote(task_name_encoded)
+    data          = request.get_json(silent=True) or {}
+    remind_at_raw = str(data.get("remind_at", "")).strip()
+    reminder_text = str(data.get("reminder_text", "")).strip()
+    if not remind_at_raw or not reminder_text:
+        return jsonify({"error": "missing required fields"}), 400
+    try:
+        remind_at = datetime.fromisoformat(remind_at_raw)
+    except ValueError:
+        return jsonify({"error": "invalid remind_at format"}), 400
+    tz  = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    if remind_at.tzinfo is None:
+        remind_at = remind_at.replace(tzinfo=tz)
+    if remind_at <= now:
+        return jsonify({"error": "remind_at must be in the future"}), 400
+
+    existing = reminder_store.get_reminder(task_name)
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    if existing.get("user_id") != liff_user_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    if GCP_PROJECT_ID and REMINDER_TASK_QUEUE:
+        try:
+            ct_client = tasks_v2.CloudTasksClient()
+            ct_client.delete_task(request={"name": task_name})
+        except Exception:
+            pass
+
+    try:
+        new_task_name = _create_reminder_task(liff_user_id, remind_at, reminder_text)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    new_record = {
+        "task_name":     new_task_name,
+        "user_id":       liff_user_id,
+        "remind_at":     remind_at.isoformat(),
+        "reminder_text": reminder_text,
+        "recurring":     existing.get("recurring", False),
+        "day_of_month":  existing.get("day_of_month"),
+        "remind_time":   existing.get("remind_time"),
+    }
+    reminder_store.update_reminder(task_name, new_record)
+    return jsonify(new_record), 200
+
+
+@app.route("/api/reminders/<path:task_name_encoded>", methods=["DELETE"])
+@require_liff_auth
+def api_reminders_delete(task_name_encoded: str, liff_user_id: str):
+    task_name = urllib.parse.unquote(task_name_encoded)
+    existing  = reminder_store.get_reminder(task_name)
+    if existing and existing.get("user_id") != liff_user_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    if GCP_PROJECT_ID and REMINDER_TASK_QUEUE:
+        try:
+            ct_client = tasks_v2.CloudTasksClient()
+            ct_client.delete_task(request={"name": task_name})
+        except Exception:
+            pass
+
+    reminder_store.remove_reminder(task_name)
+    return jsonify({"status": "cancelled"}), 200
 
 
 @app.route("/tasks/reminder", methods=["POST"])
@@ -964,10 +1321,22 @@ def tasks_reminder():
         try:
             tz = ZoneInfo(TIMEZONE)
             next_dt = _next_month_from(remind_at, int(day_of_month), remind_time, tz)
-            _create_reminder_task(
+            new_task_name = _create_reminder_task(
                 user_id, next_dt, reminder_text,
                 recurring=True, day_of_month=int(day_of_month), remind_time=remind_time,
             )
+            old_task_name = payload.get("task_name", "")
+            if old_task_name:
+                reminder_store.remove_reminder(old_task_name)
+            reminder_store.append_reminder({
+                "task_name":     new_task_name,
+                "user_id":       user_id,
+                "remind_at":     next_dt.isoformat(),
+                "reminder_text": reminder_text,
+                "recurring":     True,
+                "day_of_month":  int(day_of_month),
+                "remind_time":   remind_time,
+            })
             print(f"[Tasks] 自動重排下月提醒：{next_dt.isoformat()}")
         except Exception as e:
             print(f"[WARN] 自動重排失敗：{e}")

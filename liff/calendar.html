@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>行事曆</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fa; color: #333; }
+
+    .header {
+      background: #4A90E2; color: #fff;
+      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .nav-btn { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; padding: 4px 8px; }
+
+    .month-label { text-align: center; font-size: 15px; font-weight: 600; color: #fff; }
+
+    .calendar-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      background: #fff; border-bottom: 1px solid #e0e0e0;
+    }
+    .weekday-header {
+      text-align: center; font-size: 11px; font-weight: 600;
+      padding: 8px 2px; color: #888; border-bottom: 1px solid #e8e8e8;
+    }
+    .weekday-header.sun { color: #e74c3c; }
+    .weekday-header.sat { color: #4A90E2; }
+
+    .day-cell {
+      min-height: 72px; padding: 4px 3px;
+      border-right: 1px solid #f0f0f0; border-bottom: 1px solid #f0f0f0;
+      cursor: pointer; position: relative; transition: background 0.1s;
+      overflow: hidden;
+    }
+    .day-cell:hover { background: #f0f7ff; }
+    .day-cell.empty { background: #fafafa; cursor: default; }
+    .day-cell.today .day-num { background: #4A90E2; color: #fff; border-radius: 50%; }
+    .day-cell.has-events { background: #fff; }
+    .day-cell.selected { background: #e8f4ff; }
+
+    .day-num {
+      font-size: 12px; font-weight: 600; width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 2px;
+    }
+    .day-num.sun { color: #e74c3c; }
+    .day-num.sat { color: #4A90E2; }
+
+    .event-chip {
+      font-size: 10px; background: #4A90E2; color: #fff;
+      border-radius: 3px; padding: 1px 4px; margin-bottom: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      display: block; width: 100%; max-width: 100%;
+    }
+    .event-chip.all-day { background: #6C63FF; }
+    .more-chip { font-size: 10px; color: #4A90E2; font-weight: 600; padding-left: 2px; }
+
+    .day-panel {
+      background: #fff; border-top: 2px solid #4A90E2;
+      padding: 12px 16px; display: none;
+    }
+    .day-panel.open { display: block; }
+    .day-panel h3 { font-size: 14px; font-weight: 600; color: #4A90E2; margin-bottom: 10px; }
+    .event-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 8px 0; border-bottom: 1px solid #f0f0f0;
+    }
+    .event-row:last-child { border-bottom: none; }
+    .time-badge {
+      font-size: 11px; font-weight: 600; color: #fff;
+      background: #1DB446; border-radius: 4px; padding: 2px 6px;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .time-badge.all-day { background: #6C63FF; }
+    .event-info { flex: 1; }
+    .event-title { font-size: 13px; font-weight: 600; }
+    .event-loc { font-size: 11px; color: #888; margin-top: 2px; }
+    .edit-event-btn {
+      flex-shrink: 0; background: none; border: 1px solid #4A90E2;
+      color: #4A90E2; border-radius: 6px; padding: 4px 10px;
+      font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .del-event-btn {
+      flex-shrink: 0; background: none; border: 1px solid #e74c3c;
+      color: #e74c3c; border-radius: 6px; padding: 4px 10px;
+      font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .btn-group { display: flex; gap: 6px; flex-shrink: 0; }
+    .no-events { color: #aaa; font-size: 13px; text-align: center; padding: 16px 0; }
+
+    .fab {
+      position: fixed; bottom: 24px; right: 20px;
+      width: 50px; height: 50px; border-radius: 50%;
+      background: #4A90E2; color: #fff; border: none;
+      font-size: 26px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .fab-reminder {
+      position: fixed; bottom: 84px; right: 20px;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: #fff; color: #4A90E2; border: 2px solid #4A90E2;
+      font-size: 20px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+
+    .loading { text-align: center; padding: 40px; color: #aaa; font-size: 14px; }
+    .error-msg { text-align: center; padding: 24px; color: #e74c3c; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <button class="nav-btn" id="prevBtn">‹</button>
+  <div>
+    <div class="month-label" id="monthLabel"></div>
+    <h1 style="font-size:13px;font-weight:400;text-align:center;opacity:.8">行事曆</h1>
+  </div>
+  <button class="nav-btn" id="nextBtn">›</button>
+</div>
+
+<div id="calendarWrap">
+  <div class="calendar-grid" id="weekdayHeaders"></div>
+  <div class="calendar-grid" id="calendarGrid"></div>
+</div>
+
+<div class="day-panel" id="dayPanel">
+  <h3 id="dayPanelTitle"></h3>
+  <div id="dayPanelEvents"></div>
+</div>
+
+<button class="fab-reminder" id="reminderBtn" title="提醒管理">🔔</button>
+<button class="fab" id="addBtn" title="新增行程">＋</button>
+
+<script>
+const LIFF_FORM_ID = '{{LIFF_FORM_ID}}';
+const LIFF_REMINDER_ID = '{{LIFF_REMINDER_ID}}';
+const API_BASE = '';
+
+let accessToken = '';
+let currentYear, currentMonth;
+let eventsCache = {};
+let selectedDate = null;
+
+async function init() {
+  try {
+    await liff.init({ liffId: '{{LIFF_CALENDAR_ID}}' });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    accessToken = liff.getAccessToken();
+    const now = new Date();
+    currentYear = now.getFullYear();
+    currentMonth = now.getMonth() + 1;
+    renderHeaders();
+    await loadAndRender();
+  } catch (e) {
+    document.getElementById('calendarGrid').innerHTML =
+      `<div class="error-msg" style="grid-column:1/-1">初始化失敗：${e.message}</div>`;
+  }
+}
+
+function renderHeaders() {
+  const days = ['日','一','二','三','四','五','六'];
+  const classes = ['sun','','','','','','sat'];
+  document.getElementById('weekdayHeaders').innerHTML =
+    days.map((d,i) => `<div class="weekday-header ${classes[i]}">${d}</div>`).join('');
+}
+
+async function loadAndRender() {
+  document.getElementById('calendarGrid').innerHTML =
+    '<div class="loading" style="grid-column:1/-1">載入中…</div>';
+  document.getElementById('dayPanel').classList.remove('open');
+  document.getElementById('monthLabel').textContent =
+    `${currentYear} 年 ${currentMonth} 月`;
+
+  const cacheKey = `${currentYear}-${String(currentMonth).padStart(2,'0')}`;
+  if (!eventsCache[cacheKey]) {
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/events?year=${currentYear}&month=${currentMonth}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!res.ok) throw new Error(res.statusText);
+      eventsCache[cacheKey] = await res.json();
+    } catch (e) {
+      document.getElementById('calendarGrid').innerHTML =
+        `<div class="error-msg" style="grid-column:1/-1">無法載入行程，請稍後再試</div>`;
+      return;
+    }
+  }
+  renderCalendar(eventsCache[cacheKey]);
+}
+
+function renderCalendar(events) {
+  const byDay = {};
+  events.forEach(ev => {
+    const d = ev.start ? ev.start.slice(0,10) : ev.date;
+    if (!byDay[d]) byDay[d] = [];
+    byDay[d].push(ev);
+  });
+
+  const firstDay = new Date(currentYear, currentMonth - 1, 1).getDay();
+  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+
+  let html = '';
+  for (let i = 0; i < firstDay; i++) html += '<div class="day-cell empty"></div>';
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dayEvents = byDay[dateStr] || [];
+    const dow = new Date(currentYear, currentMonth - 1, d).getDay();
+    const cls = [
+      'day-cell',
+      dateStr === todayStr ? 'today' : '',
+      dayEvents.length ? 'has-events' : '',
+      dateStr === selectedDate ? 'selected' : '',
+    ].filter(Boolean).join(' ');
+    const numCls = dow === 0 ? 'day-num sun' : dow === 6 ? 'day-num sat' : 'day-num';
+
+    let chips = '';
+    dayEvents.slice(0, 2).forEach(ev => {
+      const title = (ev.summary || '').slice(0, 8);
+      chips += `<span class="event-chip${ev.is_all_day ? ' all-day' : ''}">${title}</span>`;
+    });
+    if (dayEvents.length > 2) chips += `<span class="more-chip">+${dayEvents.length - 2}</span>`;
+
+    html += `<div class="${cls}" data-date="${dateStr}" onclick="selectDay('${dateStr}')">
+      <div class="${numCls}">${d}</div>${chips}
+    </div>`;
+  }
+  document.getElementById('calendarGrid').innerHTML = html;
+}
+
+function selectDay(dateStr) {
+  selectedDate = dateStr;
+  document.querySelectorAll('.day-cell.selected').forEach(el => el.classList.remove('selected'));
+  const cell = document.querySelector(`[data-date="${dateStr}"]`);
+  if (cell) cell.classList.add('selected');
+
+  const cacheKey = `${currentYear}-${String(currentMonth).padStart(2,'0')}`;
+  const events = (eventsCache[cacheKey] || []).filter(ev => {
+    const d = ev.start ? ev.start.slice(0,10) : ev.date;
+    return d === dateStr;
+  });
+
+  const [y, m, d] = dateStr.split('-');
+  const weekdays = ['日','一','二','三','四','五','六'];
+  const dow = new Date(+y, +m-1, +d).getDay();
+  document.getElementById('dayPanelTitle').textContent =
+    `${m}/${d}（${weekdays[dow]}）`;
+
+  let html = '';
+  if (!events.length) {
+    html = '<div class="no-events">今天沒有行程</div>';
+  } else {
+    events.forEach(ev => {
+      let timeText = '全天', badgeCls = 'time-badge all-day';
+      if (!ev.is_all_day && ev.start) {
+        const s = ev.start.slice(11,16), e = ev.end ? ev.end.slice(11,16) : '';
+        timeText = e ? `${s}–${e}` : s;
+        badgeCls = 'time-badge';
+      }
+      const actionBtns = ev.event_id ? `
+        <div class="btn-group">
+          ${LIFF_FORM_ID ? `<button class="edit-event-btn" onclick="openEdit('${ev.event_id}')">✏️</button>` : ''}
+          <button class="del-event-btn" onclick="deleteEvent('${ev.event_id}', '${(ev.summary||'').replace(/'/g,"\\'")}', '${dateStr}')">🗑</button>
+        </div>` : '';
+      html += `<div class="event-row" id="row-${ev.event_id}">
+        <span class="${badgeCls}">${timeText}</span>
+        <div class="event-info">
+          <div class="event-title">${ev.summary || '（無標題）'}</div>
+          ${ev.location ? `<div class="event-loc">📍 ${ev.location}</div>` : ''}
+        </div>
+        ${actionBtns}
+      </div>`;
+    });
+  }
+  document.getElementById('dayPanelEvents').innerHTML = html;
+  document.getElementById('dayPanel').classList.add('open');
+  document.getElementById('dayPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function openEdit(eventId) {
+  liff.openWindow({
+    url: `https://liff.line.me/${LIFF_FORM_ID}?event_id=${eventId}`,
+    external: false,
+  });
+}
+
+async function deleteEvent(eventId, summary, dateStr) {
+  if (!confirm(`刪除「${summary}」？此操作無法復原。`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/events/${eventId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok && res.status !== 204) throw new Error(res.statusText);
+    // 從 cache 移除
+    const cacheKey = `${currentYear}-${String(currentMonth).padStart(2,'0')}`;
+    if (eventsCache[cacheKey]) {
+      eventsCache[cacheKey] = eventsCache[cacheKey].filter(ev => ev.event_id !== eventId);
+    }
+    // 從 DOM 移除該列
+    const row = document.getElementById(`row-${eventId}`);
+    if (row) row.remove();
+    // 若當天沒行程了，顯示空狀態
+    const panel = document.getElementById('dayPanelEvents');
+    if (panel && !panel.querySelector('.event-row')) {
+      panel.innerHTML = '<div class="no-events">今天沒有行程</div>';
+    }
+  } catch (e) {
+    alert('刪除失敗：' + e.message);
+  }
+}
+
+document.getElementById('prevBtn').onclick = () => {
+  currentMonth--;
+  if (currentMonth < 1) { currentMonth = 12; currentYear--; }
+  selectedDate = null;
+  loadAndRender();
+};
+document.getElementById('nextBtn').onclick = () => {
+  currentMonth++;
+  if (currentMonth > 12) { currentMonth = 1; currentYear++; }
+  selectedDate = null;
+  loadAndRender();
+};
+
+document.getElementById('addBtn').onclick = () => {
+  if (!LIFF_FORM_ID) {
+    alert('行程表單 LIFF ID 尚未設定');
+    return;
+  }
+  liff.openWindow({ url: `https://liff.line.me/${LIFF_FORM_ID}`, external: false });
+};
+
+document.getElementById('reminderBtn').onclick = () => {
+  if (!LIFF_REMINDER_ID) {
+    alert('提醒管理 LIFF ID 尚未設定');
+    return;
+  }
+  liff.openWindow({ url: `https://liff.line.me/${LIFF_REMINDER_ID}`, external: false });
+};
+
+init();
+</script>
+</body>
+</html>

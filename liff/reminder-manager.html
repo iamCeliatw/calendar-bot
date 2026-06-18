@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>提醒管理</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fa; color: #333; }
+
+    .header {
+      background: #8E44AD; color: #fff;
+      padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .close-btn { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; }
+
+    .add-bar {
+      padding: 12px 16px; background: #fff; border-bottom: 1px solid #eee;
+    }
+    .add-btn {
+      width: 100%; padding: 10px; background: #8E44AD; color: #fff;
+      border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+
+    .inline-form {
+      background: #f9f0ff; border: 1px solid #d7b8f3;
+      border-radius: 8px; padding: 14px; margin-top: 10px; display: none;
+    }
+    .inline-form.open { display: block; }
+    .form-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    .form-row .field { flex: 1; }
+    label { display: block; font-size: 11px; font-weight: 600; color: #7D3C98; margin-bottom: 4px; }
+    input[type="date"], input[type="time"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #d7b8f3; border-radius: 6px;
+      font-size: 13px; background: #fff; -webkit-appearance: none; appearance: none;
+    }
+    textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid #d7b8f3; border-radius: 6px;
+      font-size: 13px; resize: none; height: 60px; font-family: inherit;
+    }
+    input:focus, textarea:focus { outline: none; border-color: #8E44AD; }
+    .err { color: #e74c3c; font-size: 11px; margin-bottom: 8px; display: none; }
+    .err.show { display: block; }
+    .form-actions { display: flex; gap: 8px; }
+    .confirm-btn {
+      flex: 1; padding: 9px; background: #8E44AD; color: #fff;
+      border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .cancel-form-btn {
+      flex: 1; padding: 9px; background: #fff; color: #666;
+      border: 1px solid #ddd; border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+
+    .list-wrap { padding: 12px 16px; }
+
+    .empty-msg { text-align: center; color: #aaa; font-size: 13px; padding: 32px 0; }
+
+    .reminder-card {
+      background: #fff; border-radius: 10px; margin-bottom: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); overflow: hidden;
+    }
+    .reminder-main { padding: 12px 14px; }
+    .reminder-header { display: flex; align-items: flex-start; justify-content: space-between; }
+    .reminder-time {
+      font-size: 12px; font-weight: 600; color: #7D3C98;
+      background: #F4ECFF; border-radius: 4px; padding: 2px 8px; margin-bottom: 6px;
+      display: inline-block;
+    }
+    .recurring-badge {
+      font-size: 10px; background: #2C7BE5; color: #fff;
+      border-radius: 4px; padding: 2px 6px; margin-left: 6px;
+    }
+    .reminder-text { font-size: 13px; font-weight: 600; color: #333; margin-top: 4px; }
+    .card-actions { display: flex; gap: 6px; margin-top: 10px; }
+    .edit-btn {
+      padding: 6px 14px; background: #fff; border: 1px solid #8E44AD;
+      color: #8E44AD; border-radius: 6px; font-size: 12px; cursor: pointer;
+    }
+    .delete-btn {
+      padding: 6px 14px; background: #fff; border: 1px solid #ddd;
+      color: #888; border-radius: 6px; font-size: 12px; cursor: pointer;
+    }
+
+    .edit-panel { background: #fdf8ff; border-top: 1px solid #e8d5f9; padding: 12px 14px; display: none; }
+    .edit-panel.open { display: block; }
+
+    .confirm-delete {
+      background: #fff5f5; border-top: 1px solid #fde; padding: 10px 14px;
+      display: none; font-size: 12px; color: #e74c3c;
+    }
+    .confirm-delete.open { display: flex; align-items: center; justify-content: space-between; }
+    .confirm-yes { padding: 5px 12px; background: #e74c3c; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
+    .confirm-no  { padding: 5px 12px; background: #fff; border: 1px solid #ddd; border-radius: 5px; cursor: pointer; font-size: 12px; }
+
+    .loading-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(255,255,255,0.8); align-items: center; justify-content: center; z-index: 999;
+    }
+    .loading-overlay.show { display: flex; }
+    .spinner {
+      width: 32px; height: 32px; border: 4px solid #e0e0e0;
+      border-top-color: #8E44AD; border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⏰ 提醒管理</h1>
+  <button class="close-btn" onclick="liff.closeWindow()">✕</button>
+</div>
+
+<div class="add-bar">
+  <button class="add-btn" id="showAddFormBtn">＋ 新增提醒</button>
+  <div class="inline-form" id="addForm">
+    <div class="form-row">
+      <div class="field"><label>提醒日期</label><input type="date" id="addDate"></div>
+      <div class="field"><label>提醒時間</label><input type="time" id="addTime" value="09:00"></div>
+    </div>
+    <div class="field" style="margin-bottom:10px">
+      <label>提醒內容 *</label>
+      <textarea id="addText" placeholder="請輸入提醒內容"></textarea>
+    </div>
+    <div class="err" id="errAdd"></div>
+    <div class="form-actions">
+      <button class="confirm-btn" id="confirmAddBtn">確認新增</button>
+      <button class="cancel-form-btn" id="cancelAddBtn">取消</button>
+    </div>
+  </div>
+</div>
+
+<div class="list-wrap" id="listWrap">
+  <div class="empty-msg">載入中…</div>
+</div>
+
+<div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
+
+<script>
+const API_BASE = '';
+let accessToken = '';
+let reminders = [];
+
+async function init() {
+  try {
+    await liff.init({ liffId: '{{LIFF_REMINDER_ID}}' });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    accessToken = liff.getAccessToken();
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById('addDate').value = today;
+    await loadReminders();
+    bindAddForm();
+  } catch (e) {
+    document.getElementById('listWrap').innerHTML = `<div class="empty-msg">初始化失敗：${e.message}</div>`;
+  }
+}
+
+async function loadReminders() {
+  try {
+    const res = await fetch(`${API_BASE}/api/reminders`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    reminders = res.ok ? await res.json() : [];
+  } catch { reminders = []; }
+  renderList();
+}
+
+function renderList() {
+  const wrap = document.getElementById('listWrap');
+  if (!reminders.length) {
+    wrap.innerHTML = '<div class="empty-msg">目前沒有排定的提醒</div>';
+    return;
+  }
+  wrap.innerHTML = reminders.map((r, i) => buildCard(r, i)).join('');
+  reminders.forEach((r, i) => bindCard(r, i));
+}
+
+function fmtDatetime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function isoToDateInput(iso) {
+  return iso ? iso.slice(0,10) : '';
+}
+function isoToTimeInput(iso) {
+  if (!iso) return '09:00';
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function buildCard(r, i) {
+  const taskEnc = encodeURIComponent(r.task_name);
+  return `<div class="reminder-card" id="card-${i}">
+    <div class="reminder-main">
+      <div>
+        <span class="reminder-time">${fmtDatetime(r.remind_at)}</span>
+        ${r.recurring ? '<span class="recurring-badge">月繳循環</span>' : ''}
+      </div>
+      <div class="reminder-text">${r.reminder_text}</div>
+      <div class="card-actions">
+        <button class="edit-btn" data-i="${i}">✏️ 編輯</button>
+        <button class="delete-btn" data-i="${i}">取消提醒</button>
+      </div>
+    </div>
+    <div class="edit-panel" id="editPanel-${i}">
+      <div class="form-row">
+        <div class="field"><label>提醒日期</label><input type="date" id="editDate-${i}" value="${isoToDateInput(r.remind_at)}"></div>
+        <div class="field"><label>提醒時間</label><input type="time" id="editTime-${i}" value="${isoToTimeInput(r.remind_at)}"></div>
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label>提醒內容 *</label>
+        <textarea id="editText-${i}">${r.reminder_text}</textarea>
+      </div>
+      <div class="err" id="errEdit-${i}"></div>
+      <div class="form-actions">
+        <button class="confirm-btn" data-i="${i}" id="confirmEditBtn-${i}">確認修改</button>
+        <button class="cancel-form-btn" data-i="${i}" id="cancelEditBtn-${i}">取消</button>
+      </div>
+    </div>
+    <div class="confirm-delete" id="confirmDel-${i}">
+      <span>確定要取消這個提醒嗎？</span>
+      <div style="display:flex;gap:6px">
+        <button class="confirm-yes" data-i="${i}" data-task="${taskEnc}">確定</button>
+        <button class="confirm-no" data-i="${i}">取消</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function closeAllPanels(exceptIdx = -1) {
+  reminders.forEach((_, i) => {
+    if (i === exceptIdx) return;
+    document.getElementById(`editPanel-${i}`)?.classList.remove('open');
+    document.getElementById(`confirmDel-${i}`)?.classList.remove('open');
+  });
+  if (exceptIdx !== 0) {
+    document.getElementById('addForm')?.classList.remove('open');
+  }
+}
+
+function bindCard(r, i) {
+  const taskEnc = encodeURIComponent(r.task_name);
+
+  document.querySelector(`.edit-btn[data-i="${i}"]`).onclick = () => {
+    closeAllPanels(i);
+    document.getElementById(`editPanel-${i}`).classList.toggle('open');
+  };
+  document.querySelector(`.delete-btn[data-i="${i}"]`).onclick = () => {
+    closeAllPanels(i);
+    document.getElementById(`confirmDel-${i}`).classList.toggle('open');
+  };
+  document.getElementById(`cancelEditBtn-${i}`).onclick = () => {
+    document.getElementById(`editPanel-${i}`).classList.remove('open');
+  };
+  document.getElementById(`confirmEditBtn-${i}`).onclick = () => submitEdit(i, r.task_name);
+  document.querySelector(`.confirm-yes[data-i="${i}"]`).onclick = () => deleteReminder(i, r.task_name);
+  document.querySelector(`.confirm-no[data-i="${i}"]`).onclick = () => {
+    document.getElementById(`confirmDel-${i}`).classList.remove('open');
+  };
+}
+
+async function submitEdit(i, taskName) {
+  const dateVal = document.getElementById(`editDate-${i}`).value;
+  const timeVal = document.getElementById(`editTime-${i}`).value;
+  const text    = document.getElementById(`editText-${i}`).value.trim();
+  const errEl   = document.getElementById(`errEdit-${i}`);
+
+  if (!text) { errEl.textContent = '請輸入提醒內容'; errEl.classList.add('show'); return; }
+  const remindAt = new Date(`${dateVal}T${timeVal}`);
+  if (remindAt <= new Date()) { errEl.textContent = '不能設定過去時間'; errEl.classList.add('show'); return; }
+  errEl.classList.remove('show');
+
+  document.getElementById('loadingOverlay').classList.add('show');
+  try {
+    const res = await fetch(`${API_BASE}/api/reminders/${encodeURIComponent(taskName)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ remind_at: remindAt.toISOString(), reminder_text: text }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const updated = await res.json();
+    reminders[i] = updated;
+    renderList();
+  } catch (e) {
+    errEl.textContent = '更新失敗：' + e.message;
+    errEl.classList.add('show');
+  } finally {
+    document.getElementById('loadingOverlay').classList.remove('show');
+  }
+}
+
+async function deleteReminder(i, taskName) {
+  document.getElementById('loadingOverlay').classList.add('show');
+  try {
+    await fetch(`${API_BASE}/api/reminders/${encodeURIComponent(taskName)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    reminders.splice(i, 1);
+    renderList();
+  } catch (e) {
+    alert('取消失敗：' + e.message);
+  } finally {
+    document.getElementById('loadingOverlay').classList.remove('show');
+  }
+}
+
+function bindAddForm() {
+  document.getElementById('showAddFormBtn').onclick = () => {
+    closeAllPanels(0);
+    document.getElementById('addForm').classList.toggle('open');
+    document.getElementById('errAdd').classList.remove('show');
+  };
+  document.getElementById('cancelAddBtn').onclick = () => {
+    document.getElementById('addForm').classList.remove('open');
+  };
+  document.getElementById('confirmAddBtn').onclick = submitAdd;
+}
+
+async function submitAdd() {
+  const dateVal = document.getElementById('addDate').value;
+  const timeVal = document.getElementById('addTime').value;
+  const text    = document.getElementById('addText').value.trim();
+  const errEl   = document.getElementById('errAdd');
+
+  if (!text) { errEl.textContent = '請輸入提醒內容'; errEl.classList.add('show'); return; }
+  const remindAt = new Date(`${dateVal}T${timeVal}`);
+  if (remindAt <= new Date()) { errEl.textContent = '不能設定過去時間'; errEl.classList.add('show'); return; }
+  errEl.classList.remove('show');
+
+  document.getElementById('loadingOverlay').classList.add('show');
+  try {
+    const res = await fetch(`${API_BASE}/api/reminders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ remind_at: remindAt.toISOString(), reminder_text: text }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const newR = await res.json();
+    reminders.unshift(newR);
+    document.getElementById('addForm').classList.remove('open');
+    document.getElementById('addText').value = '';
+    renderList();
+  } catch (e) {
+    errEl.textContent = '新增失敗：' + e.message;
+    errEl.classList.add('show');
+  } finally {
+    document.getElementById('loadingOverlay').classList.remove('show');
+  }
+}
+
+init();
+</script>
+</body>
+</html>
