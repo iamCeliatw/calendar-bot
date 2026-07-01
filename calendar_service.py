@@ -84,6 +84,8 @@ def _parse_event(event: dict, tz: ZoneInfo) -> dict:
     start = event["start"]
     end = event["end"]
 
+    is_editable = event.get("eventType", "default") == "default"
+
     if "date" in start:
         return {
             "event_id": event.get("id", ""),
@@ -93,6 +95,7 @@ def _parse_event(event: dict, tz: ZoneInfo) -> dict:
             "is_all_day": True,
             "location": event.get("location", ""),
             "description": event.get("description", ""),
+            "is_editable": is_editable,
         }
 
     start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(tz)
@@ -106,6 +109,7 @@ def _parse_event(event: dict, tz: ZoneInfo) -> dict:
         "is_all_day": False,
         "location": event.get("location", ""),
         "description": event.get("description", ""),
+        "is_editable": is_editable,
     }
 
 
@@ -242,6 +246,9 @@ def update_event(
     """更新行程（patch），回傳更新後事件 dict。"""
     creds = get_credentials()
     service = build("calendar", "v3", credentials=creds)
+    existing = service.events().get(calendarId="primary", eventId=event_id).execute()
+    if existing.get("eventType", "default") != "default":
+        raise ValueError("此行程由 Gmail 自動建立（例如訂位、航班通知），無法在此編輯，請至 Google 日曆查看")
     body: dict = {"summary": summary}
     if is_all_day:
         body["start"] = {"date": all_day_date}

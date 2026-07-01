@@ -1098,6 +1098,7 @@ def api_events_list(liff_user_id: str):
                 "is_all_day": ev["is_all_day"],
                 "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
                 "location":   ev["location"],
+                "is_editable": ev["is_editable"],
             })
     result.sort(key=lambda x: x["start"] or x["date"] or "")
     return jsonify(result), 200
@@ -1118,6 +1119,7 @@ def api_event_get(event_id: str, liff_user_id: str):
         "is_all_day": ev["is_all_day"],
         "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
         "location":   ev["location"],
+        "is_editable": ev["is_editable"],
     }), 200
 
 
@@ -1154,6 +1156,8 @@ def api_event_update(event_id: str, liff_user_id: str):
             event_id, summary, start_dt, end_dt, TIMEZONE, location,
             is_all_day=is_all_day, all_day_date=date_str,
         )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         msg = str(e)
         if "404" in msg or "notFound" in msg:

@@ -268,7 +268,7 @@ function selectDay(dateStr) {
       }
       const actionBtns = ev.event_id ? `
         <div class="btn-group">
-          ${LIFF_FORM_ID ? `<button class="edit-event-btn" onclick="openEdit('${ev.event_id}')">✏️</button>` : ''}
+          ${LIFF_FORM_ID && ev.is_editable !== false ? `<button class="edit-event-btn" onclick="openEdit('${ev.event_id}')">✏️</button>` : ''}
           <button class="del-event-btn" onclick="deleteEvent('${ev.event_id}', '${(ev.summary||'').replace(/'/g,"\\'")}', '${dateStr}')">🗑</button>
         </div>` : '';
       html += `<div class="event-row" id="row-${ev.event_id}">
