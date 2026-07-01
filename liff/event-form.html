@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>行程表單</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fa; color: #333; }
+
+    .header {
+      background: #4A90E2; color: #fff;
+      padding: 14px 16px; display: flex; align-items: center; gap: 12px;
+    }
+    .back-btn { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; }
+    .header h1 { font-size: 16px; font-weight: 600; }
+
+    .form-body { padding: 16px; }
+
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #666; margin-bottom: 6px; }
+    input[type="text"], input[type="date"], input[type="time"] {
+      width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px;
+      font-size: 14px; background: #fff; color: #333;
+      -webkit-appearance: none; appearance: none;
+    }
+    input:focus { outline: none; border-color: #4A90E2; }
+
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px;
+    }
+    .toggle-label { font-size: 14px; }
+    .toggle {
+      width: 42px; height: 24px; background: #ccc; border-radius: 12px;
+      position: relative; cursor: pointer; transition: background 0.2s; border: none;
+    }
+    .toggle.on { background: #4A90E2; }
+    .toggle::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 20px; height: 20px; background: #fff; border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(18px); }
+
+    .time-row { display: flex; gap: 10px; }
+    .time-row .field { flex: 1; }
+
+    .err { color: #e74c3c; font-size: 12px; margin-top: 4px; display: none; }
+    .err.show { display: block; }
+
+    .submit-btn {
+      width: 100%; padding: 14px; background: #4A90E2; color: #fff;
+      border: none; border-radius: 10px; font-size: 15px; font-weight: 600;
+      cursor: pointer; margin-top: 8px;
+    }
+    .submit-btn:active { opacity: 0.85; }
+    .submit-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+    .loading-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(255,255,255,0.8); align-items: center; justify-content: center;
+      flex-direction: column; gap: 12px; z-index: 999;
+    }
+    .loading-overlay.show { display: flex; }
+    .spinner {
+      width: 36px; height: 36px; border: 4px solid #e0e0e0;
+      border-top-color: #4A90E2; border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <button class="back-btn" onclick="liff.closeWindow()">✕</button>
+  <h1 id="formTitle">新增行程</h1>
+</div>
+
+<div class="form-body">
+  <div class="field">
+    <label>行程名稱 *</label>
+    <input type="text" id="summary" placeholder="請輸入行程名稱">
+    <div class="err" id="errSummary">請輸入行程名稱</div>
+  </div>
+
+  <div class="field">
+    <label>日期 *</label>
+    <input type="date" id="date">
+  </div>
+
+  <div class="field">
+    <div class="toggle-row">
+      <span class="toggle-label">全天事件</span>
+      <button class="toggle" id="allDayToggle" aria-pressed="false"></button>
+    </div>
+  </div>
+
+  <div id="timeFields">
+    <div class="time-row">
+      <div class="field">
+        <label>開始時間</label>
+        <input type="time" id="startTime" value="09:00">
+      </div>
+      <div class="field">
+        <label>結束時間</label>
+        <input type="time" id="endTime" value="10:00">
+      </div>
+    </div>
+    <div class="err" id="errTime">結束時間須晚於開始時間</div>
+  </div>
+
+  <div class="field">
+    <label>地點（選填）</label>
+    <input type="text" id="location" placeholder="請輸入地點">
+  </div>
+
+  <button class="submit-btn" id="submitBtn">建立行程</button>
+</div>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div style="font-size:14px;color:#666">處理中…</div>
+</div>
+
+<script>
+const API_BASE = '';
+let accessToken = '';
+let eventId = null;
+let isAllDay = false;
+
+async function init() {
+  try {
+    await liff.init({ liffId: '{{LIFF_FORM_ID}}' });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    accessToken = liff.getAccessToken();
+
+    const params = new URLSearchParams(location.search);
+    eventId = params.get('event_id');
+
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById('date').value = today;
+
+    if (eventId) {
+      document.getElementById('formTitle').textContent = '編輯行程';
+      document.getElementById('submitBtn').textContent = '更新行程';
+      await loadEvent(eventId);
+    }
+  } catch (e) {
+    alert('初始化失敗：' + e.message);
+  }
+}
+
+async function loadEvent(id) {
+  try {
+    const res = await fetch(`${API_BASE}/api/events/${id}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (res.status === 404) {
+      alert('找不到此行程，將切換為新增模式');
+      eventId = null;
+      document.getElementById('formTitle').textContent = '新增行程';
+      document.getElementById('submitBtn').textContent = '建立行程';
+      return;
+    }
+    const ev = await res.json();
+    if (ev.is_editable === false) {
+      alert('此行程由 Gmail 自動建立（例如訂位、航班通知），無法在此編輯，請至 Google 日曆查看');
+      liff.closeWindow();
+      return;
+    }
+    document.getElementById('summary').value = ev.summary || '';
+    document.getElementById('location').value = ev.location || '';
+
+    if (ev.is_all_day) {
+      document.getElementById('date').value = ev.date || ev.start?.slice(0,10) || '';
+      setAllDay(true);
+    } else {
+      document.getElementById('date').value = ev.start?.slice(0,10) || '';
+      document.getElementById('startTime').value = ev.start?.slice(11,16) || '09:00';
+      document.getElementById('endTime').value = ev.end?.slice(11,16) || '10:00';
+    }
+  } catch (e) {
+    alert('載入行程失敗：' + e.message);
+  }
+}
+
+function setAllDay(val) {
+  isAllDay = val;
+  const btn = document.getElementById('allDayToggle');
+  btn.classList.toggle('on', val);
+  btn.setAttribute('aria-pressed', val);
+  document.getElementById('timeFields').style.display = val ? 'none' : 'block';
+}
+
+document.getElementById('allDayToggle').onclick = () => setAllDay(!isAllDay);
+
+document.getElementById('startTime').addEventListener('change', () => {
+  const val = document.getElementById('startTime').value;
+  if (!val) return;
+  const [h, m] = val.split(':').map(Number);
+  const endH = (h + 1) % 24;
+  document.getElementById('endTime').value =
+    `${String(endH).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+});
+
+function validate() {
+  let ok = true;
+  const summary = document.getElementById('summary').value.trim();
+  if (!summary) {
+    document.getElementById('errSummary').classList.add('show');
+    ok = false;
+  } else {
+    document.getElementById('errSummary').classList.remove('show');
+  }
+  if (!isAllDay) {
+    const s = document.getElementById('startTime').value;
+    const e = document.getElementById('endTime').value;
+    if (s >= e) {
+      document.getElementById('errTime').classList.add('show');
+      ok = false;
+    } else {
+      document.getElementById('errTime').classList.remove('show');
+    }
+  }
+  return ok;
+}
+
+document.getElementById('submitBtn').onclick = async () => {
+  if (!validate()) return;
+
+  const date = document.getElementById('date').value;
+  const body = {
+    summary: document.getElementById('summary').value.trim(),
+    date,
+    is_all_day: isAllDay,
+    location: document.getElementById('location').value.trim(),
+  };
+  if (!isAllDay) {
+    body.start_time = document.getElementById('startTime').value;
+    body.end_time   = document.getElementById('endTime').value;
+  }
+
+  document.getElementById('loadingOverlay').classList.add('show');
+  document.getElementById('submitBtn').disabled = true;
+
+  try {
+    const url    = eventId ? `${API_BASE}/api/events/${eventId}` : `${API_BASE}/api/events`;
+    const method = eventId ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    liff.closeWindow();
+  } catch (e) {
+    document.getElementById('loadingOverlay').classList.remove('show');
+    document.getElementById('submitBtn').disabled = false;
+    alert('操作失敗：' + e.message);
+  }
+};
+
+init();
+</script>
+</body>
+</html>
