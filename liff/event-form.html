@@ -139,8 +139,10 @@ async function init() {
     const params = new URLSearchParams(location.search);
     eventId = params.get('event_id');
 
+    const dateParam = params.get('date');
     const today = new Date().toISOString().slice(0, 10);
-    document.getElementById('date').value = today;
+    document.getElementById('date').value =
+      /^\d{4}-\d{2}-\d{2}$/.test(dateParam || '') ? dateParam : today;
 
     if (eventId) {
       document.getElementById('formTitle').textContent = '編輯行程';

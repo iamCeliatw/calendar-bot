@@ -337,7 +337,8 @@ document.getElementById('addBtn').onclick = () => {
     alert('行程表單 LIFF ID 尚未設定');
     return;
   }
-  liff.openWindow({ url: `https://liff.line.me/${LIFF_FORM_ID}`, external: false });
+  const query = selectedDate ? `?date=${selectedDate}` : '';
+  liff.openWindow({ url: `https://liff.line.me/${LIFF_FORM_ID}${query}`, external: false });
 };
 
 document.getElementById('reminderBtn').onclick = () => {
