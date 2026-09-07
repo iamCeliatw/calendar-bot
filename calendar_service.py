@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -77,6 +77,11 @@ def get_credentials():
         _persist_token(creds.to_json())
 
     return creds
+
+
+def _all_day_end(date_str: str) -> str:
+    """Google 全天事件的 end.date 是排他的：單日事件的結束日要是隔天。"""
+    return (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
 
 
 def _parse_event(event: dict, tz: ZoneInfo) -> dict:
@@ -250,17 +255,19 @@ def update_event(
     if existing.get("eventType", "default") != "default":
         raise ValueError("此行程由 Gmail 自動建立（例如訂位、航班通知），無法在此編輯，請至 Google 日曆查看")
     body: dict = {"summary": summary}
+    # patch 對 start/end 是遞迴合併，只給新欄位的話舊欄位會留著，
+    # 變成 date 與 dateTime 並存 → 400。互斥欄位一律顯式送 None 清掉。
     if is_all_day:
-        body["start"] = {"date": all_day_date}
-        body["end"]   = {"date": all_day_date}
+        body["start"] = {"date": all_day_date, "dateTime": None, "timeZone": None}
+        body["end"]   = {"date": _all_day_end(all_day_date), "dateTime": None, "timeZone": None}
     else:
         tz = ZoneInfo(timezone_str)
         if start and start.tzinfo is None:
             start = start.replace(tzinfo=tz)
         if end and end.tzinfo is None:
             end = end.replace(tzinfo=tz)
-        body["start"] = {"dateTime": start.isoformat(), "timeZone": timezone_str}
-        body["end"]   = {"dateTime": end.isoformat(),   "timeZone": timezone_str}
+        body["start"] = {"dateTime": start.isoformat(), "timeZone": timezone_str, "date": None}
+        body["end"]   = {"dateTime": end.isoformat(),   "timeZone": timezone_str, "date": None}
     if location is not None:
         body["location"] = location
     return service.events().patch(
@@ -287,7 +294,7 @@ def create_all_day_event(
     body: dict = {
         "summary": summary,
         "start": {"date": date_str},
-        "end":   {"date": date_str},
+        "end":   {"date": _all_day_end(date_str)},
     }
     if location:
         body["location"] = location

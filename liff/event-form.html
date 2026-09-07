@@ -20,7 +20,7 @@
 
     .field { margin-bottom: 16px; }
     label { display: block; font-size: 12px; font-weight: 600; color: #666; margin-bottom: 6px; }
-    input[type="text"], input[type="date"], input[type="time"] {
+    input[type="text"], input[type="date"] {
       width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px;
       font-size: 14px; background: #fff; color: #333;
       -webkit-appearance: none; appearance: none;
@@ -44,6 +44,13 @@
     }
     .toggle.on::after { transform: translateX(18px); }
 
+    .time-field { display: flex; align-items: center; gap: 4px; }
+    .time-field select {
+      flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #ddd;
+      border-radius: 8px; font-size: 14px; background: #fff; color: #333;
+    }
+    .time-field select:focus { outline: none; border-color: #4A90E2; }
+    .time-colon { font-weight: 600; color: #666; }
     .time-row { display: flex; gap: 10px; }
     .time-row .field { flex: 1; }
 
@@ -101,11 +108,11 @@
     <div class="time-row">
       <div class="field">
         <label>開始時間</label>
-        <input type="time" id="startTime" value="09:00" lang="en-GB">
+        <span id="startTimeBox"></span>
       </div>
       <div class="field">
         <label>結束時間</label>
-        <input type="time" id="endTime" value="10:00" lang="en-GB">
+        <span id="endTimeBox"></span>
       </div>
     </div>
     <div class="err" id="errTime">結束時間須晚於開始時間</div>
@@ -138,6 +145,13 @@ async function init() {
 
     const params = new URLSearchParams(location.search);
     eventId = params.get('event_id');
+
+    document.getElementById('startTimeBox').innerHTML = timeFieldHTML('startTime');
+    document.getElementById('endTimeBox').innerHTML   = timeFieldHTML('endTime');
+    setTime('startTime', '09:00');
+    setTime('endTime', '10:00');
+    document.getElementById('startTimeH').addEventListener('change', syncEndTime);
+    document.getElementById('startTimeM').addEventListener('change', syncEndTime);
 
     const dateParam = params.get('date');
     const today = new Date().toISOString().slice(0, 10);
@@ -180,12 +194,31 @@ async function loadEvent(id) {
       setAllDay(true);
     } else {
       document.getElementById('date').value = ev.start?.slice(0,10) || '';
-      document.getElementById('startTime').value = ev.start?.slice(11,16) || '09:00';
-      document.getElementById('endTime').value = ev.end?.slice(11,16) || '10:00';
+      setTime('startTime', ev.start?.slice(11,16) || '09:00');
+      setTime('endTime', ev.end?.slice(11,16) || '10:00');
     }
   } catch (e) {
     alert('載入行程失敗：' + e.message);
   }
+}
+
+// ponytail: 用 <select> 取代 <input type="time">。原生 time picker 的 12/24 小時制由
+// OS / 瀏覽器 locale 決定（Android 跟系統設定、iOS 跟 iOS 設定），lang 屬性壓不住，
+// 只有自己畫才能保證兩個平台都是 24 小時制。
+const _TIME_OPTS = n => Array.from({length: n},
+  (_, i) => `<option value="${String(i).padStart(2,'0')}">${String(i).padStart(2,'0')}</option>`).join('');
+const _HOUR_OPTS = _TIME_OPTS(24), _MIN_OPTS = _TIME_OPTS(60);
+function timeFieldHTML(id) {
+  return `<span class="time-field"><select id="${id}H">${_HOUR_OPTS}</select>`
+       + `<span class="time-colon">:</span><select id="${id}M">${_MIN_OPTS}</select></span>`;
+}
+function getTime(id) {
+  return `${document.getElementById(id + 'H').value}:${document.getElementById(id + 'M').value}`;
+}
+function setTime(id, val) {
+  const [h, m] = (val || '09:00').split(':');
+  document.getElementById(id + 'H').value = h;
+  document.getElementById(id + 'M').value = m;
 }
 
 function setAllDay(val) {
@@ -198,14 +231,10 @@ function setAllDay(val) {
 
 document.getElementById('allDayToggle').onclick = () => setAllDay(!isAllDay);
 
-document.getElementById('startTime').addEventListener('change', () => {
-  const val = document.getElementById('startTime').value;
-  if (!val) return;
-  const [h, m] = val.split(':').map(Number);
-  const endH = (h + 1) % 24;
-  document.getElementById('endTime').value =
-    `${String(endH).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-});
+function syncEndTime() {
+  const [h, m] = getTime('startTime').split(':').map(Number);
+  setTime('endTime', `${String((h + 1) % 24).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+}
 
 function validate() {
   let ok = true;
@@ -217,8 +246,8 @@ function validate() {
     document.getElementById('errSummary').classList.remove('show');
   }
   if (!isAllDay) {
-    const s = document.getElementById('startTime').value;
-    const e = document.getElementById('endTime').value;
+    const s = getTime('startTime');
+    const e = getTime('endTime');
     if (s >= e) {
       document.getElementById('errTime').classList.add('show');
       ok = false;
@@ -240,8 +269,8 @@ document.getElementById('submitBtn').onclick = async () => {
     location: document.getElementById('location').value.trim(),
   };
   if (!isAllDay) {
-    body.start_time = document.getElementById('startTime').value;
-    body.end_time   = document.getElementById('endTime').value;
+    body.start_time = getTime('startTime');
+    body.end_time   = getTime('endTime');
   }
 
   document.getElementById('loadingOverlay').classList.add('show');

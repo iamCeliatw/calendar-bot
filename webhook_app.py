@@ -94,8 +94,12 @@ def _get_user_names() -> dict[str, str]:
 
 
 def _prefixed(summary: str, uid: str) -> str:
+    """加上「【名字】」前綴；已經有同一個前綴就不再加（編輯時表單會帶回原標題）。"""
     name = _get_user_names().get(uid, "")
-    return f"【{name}】{summary}" if name else summary
+    if not name:
+        return summary
+    tag = f"【{name}】"
+    return summary if summary.startswith(tag) else f"{tag}{summary}"
 
 
 # ── LIFF API 驗證 ─────────────────────────────────────────────────────────────
@@ -1131,6 +1135,7 @@ def api_events_create(liff_user_id: str):
     summary, start_dt, end_dt, is_all_day, date_str, location = _parse_event_body(data, tz)
     if not summary or not date_str:
         return jsonify({"error": "missing required fields"}), 400
+    summary = _prefixed(summary, liff_user_id)
     try:
         if is_all_day:
             created = calendar_service.create_all_day_event(summary, date_str, TIMEZONE, location)
