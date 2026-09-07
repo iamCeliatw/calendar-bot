@@ -50,6 +50,33 @@ def _info_row(icon: str, text: str, bold: bool = False) -> FlexBox:
     )
 
 
+def build_result_flex(
+    title: str,
+    rows: list[tuple[str, str]],
+    color: str = "#27AE60",
+    note: str = "",
+) -> FlexMessage:
+    """通用結果卡片：一列標題 + 幾組（圖示, 文字）。給建立成功／刪除／部分失敗共用。"""
+    body_contents = [_info_row(icon, text) for icon, text in rows]
+    bubble = FlexBubble(
+        type="bubble",
+        header=FlexBox(
+            type="box", layout="vertical", background_color=color, padding_all="14px",
+            contents=[FlexText(type="text", text=title, color="#ffffff", size="md", weight="bold")],
+        ),
+        body=FlexBox(
+            type="box", layout="vertical", spacing="sm", padding_all="14px",
+            contents=body_contents,
+        ),
+        footer=FlexBox(
+            type="box", layout="vertical", padding_all="12px",
+            contents=[FlexText(type="text", text=note, size="xs", color="#aaaaaa", align="center", wrap=True)],
+        ) if note else None,
+    )
+    alt = f"{title}：{rows[0][1]}" if rows else title
+    return FlexMessage(alt_text=alt, contents=bubble)
+
+
 def _pending_info_rows(pending: PendingEvent) -> list:
     """從 PendingEvent 建立行程資訊列（名稱、日期、時間、地點）。"""
     if pending.is_all_day:
@@ -640,8 +667,26 @@ def build_conflict_flex(conflicts: list[dict], pending: PendingEvent) -> FlexMes
 
 
 def build_event_list_flex(events: list[dict], date: datetime) -> FlexMessage:
-    """建立行程列表卡片。"""
+    """建立行程列表卡片；沒有行程時回同一張卡的空狀態，不要退化成純文字。"""
     body_contents = []
+
+    if not events:
+        body_contents.append(
+            FlexBox(
+                type="box", layout="vertical", spacing="sm", padding_all="12px",
+                contents=[
+                    FlexText(type="text", text="🌤", size="xxl", align="center"),
+                    FlexText(
+                        type="text", text="這天沒有行程", size="sm", weight="bold",
+                        color="#666666", align="center", wrap=True,
+                    ),
+                    FlexText(
+                        type="text", text="輸入「新增行程」可以排一個", size="xs",
+                        color="#aaaaaa", align="center", wrap=True,
+                    ),
+                ],
+            )
+        )
 
     for i, event in enumerate(events):
         if i > 0:
@@ -803,10 +848,11 @@ def build_event_list_flex(events: list[dict], date: datetime) -> FlexMessage:
                     align="center",
                 )
             ],
-        ),
+        ) if events else None,
     )
     return FlexMessage(
-        alt_text=f"行程查詢：{date_str}（共 {len(events)} 個）",
+        alt_text=f"行程查詢：{date_str}（共 {len(events)} 個）" if events
+                 else f"行程查詢：{date_str}（沒有行程）",
         contents=bubble,
     )
 

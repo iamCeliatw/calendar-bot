@@ -683,10 +683,7 @@ def _on_text(event: MessageEvent):
     if view_date:
         delete_session(uid)
         events = calendar_service.get_events(view_date, TIMEZONE)
-        if events:
-            _reply_flex(event.reply_token, line_service.build_event_list_flex(events, view_date))
-        else:
-            _reply_text(event.reply_token, f"📅 {view_date.strftime('%Y/%m/%d')} 沒有行程。")
+        _reply_flex(event.reply_token, line_service.build_event_list_flex(events, view_date))
         return
 
     week_range = _try_parse_week_view(text)
@@ -932,14 +929,18 @@ def _on_postback(event: PostbackEvent):
                 failed.append((item["name"], str(e)))
         delete_session(uid)
         if failed:
-            fail_lines = "\n".join(f"• {name}: {err}" for name, err in failed)
-            _reply_text(reply_token, f"⚠️ 部分建立失敗：\n{fail_lines}")
+            _reply_flex(reply_token, line_service.build_result_flex(
+                "⚠️ 部分建立失敗",
+                [("•", f"{name}：{err}") for name, err in failed],
+                color="#E67E22",
+            ))
         else:
-            lines = "\n".join(f"• {item['name']}（每月{item['day']}日）" for item in created)
-            _reply_text(
-                reply_token,
-                f"✅ 每月提醒已建立！\n\n{lines}\n\n提醒時間：{remind_time}\n每月自動發送 🔁",
-            )
+            _reply_flex(reply_token, line_service.build_result_flex(
+                "✅ 每月提醒已建立",
+                [("🔁", f"{item['name']}（每月 {item['day']} 日）") for item in created]
+                + [("🕐", f"提醒時間 {remind_time}")],
+                note="每月自動發送",
+            ))
 
     # ── 卡費提醒精靈：取消 ─────────────────────────────────────────────────────
     elif data == "cc_remind:cancel":
@@ -957,7 +958,9 @@ def _on_postback(event: PostbackEvent):
         event_id = data[15:]
         try:
             calendar_service.delete_event(event_id)
-            _reply_text(reply_token, "🗑 行程已刪除。")
+            _reply_flex(reply_token, line_service.build_result_flex(
+                "🗑 行程已刪除", [("✅", "已從 Google 日曆移除")], color="#C0392B",
+            ))
         except Exception as e:
             _reply_text(reply_token, f"刪除失敗：{e}")
 
@@ -997,13 +1000,11 @@ def _on_postback(event: PostbackEvent):
             "recurring":     False,
         })
         delete_session(uid)
-        _reply_text(
-            reply_token,
-            "✅ 提醒已建立\n"
-            f"時間：{remind_at.strftime('%Y/%m/%d %H:%M')}\n"
-            f"內容：{reminder_text}\n"
-            f"Task：{task_name.split('/')[-1]}",
-        )
+        _reply_flex(reply_token, line_service.build_result_flex(
+            "✅ 提醒已建立",
+            [("🕐", remind_at.strftime("%Y/%m/%d %H:%M")), ("📝", reminder_text)],
+            note=f"Task：{task_name.split('/')[-1]}",
+        ))
 
 
 # ── Flask 路由 ────────────────────────────────────────────────────────────────
