@@ -32,7 +32,13 @@
     .form-row { display: flex; gap: 8px; margin-bottom: 10px; }
     .form-row .field { flex: 1; }
     label { display: block; font-size: 11px; font-weight: 600; color: #7D3C98; margin-bottom: 4px; }
-    input[type="date"], input[type="time"] {
+    .time-field { display: flex; align-items: center; gap: 4px; }
+    .time-field select {
+      flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #d7b8f3;
+      border-radius: 6px; font-size: 13px; background: #fff;
+    }
+    .time-colon { font-weight: 600; color: #7D3C98; }
+    input[type="date"] {
       width: 100%; padding: 8px 10px; border: 1px solid #d7b8f3; border-radius: 6px;
       font-size: 13px; background: #fff; -webkit-appearance: none; appearance: none;
     }
@@ -118,7 +124,7 @@
   <div class="inline-form" id="addForm">
     <div class="form-row">
       <div class="field"><label>提醒日期</label><input type="date" id="addDate"></div>
-      <div class="field"><label>提醒時間</label><input type="time" id="addTime" value="09:00" lang="en-GB"></div>
+      <div class="field"><label>提醒時間</label><span id="addTimeBox"></span></div>
     </div>
     <div class="field" style="margin-bottom:10px">
       <label>提醒內容 *</label>
@@ -150,6 +156,8 @@ async function init() {
     accessToken = liff.getAccessToken();
     const today = new Date().toISOString().slice(0, 10);
     document.getElementById('addDate').value = today;
+    document.getElementById('addTimeBox').innerHTML = timeFieldHTML('addTime');
+    setTime('addTime', '09:00');
     await loadReminders();
     bindAddForm();
   } catch (e) {
@@ -165,6 +173,25 @@ async function loadReminders() {
     reminders = res.ok ? await res.json() : [];
   } catch { reminders = []; }
   renderList();
+}
+
+// ponytail: 用 <select> 取代 <input type="time">。原生 time picker 的 12/24 小時制由
+// OS / 瀏覽器 locale 決定（Android 跟系統設定、iOS 跟 iOS 設定），lang 屬性壓不住，
+// 只有自己畫才能保證兩個平台都是 24 小時制。
+const _TIME_OPTS = n => Array.from({length: n},
+  (_, i) => `<option value="${String(i).padStart(2,'0')}">${String(i).padStart(2,'0')}</option>`).join('');
+const _HOUR_OPTS = _TIME_OPTS(24), _MIN_OPTS = _TIME_OPTS(60);
+function timeFieldHTML(id) {
+  return `<span class="time-field"><select id="${id}H">${_HOUR_OPTS}</select>`
+       + `<span class="time-colon">:</span><select id="${id}M">${_MIN_OPTS}</select></span>`;
+}
+function getTime(id) {
+  return `${document.getElementById(id + 'H').value}:${document.getElementById(id + 'M').value}`;
+}
+function setTime(id, val) {
+  const [h, m] = (val || '09:00').split(':');
+  document.getElementById(id + 'H').value = h;
+  document.getElementById(id + 'M').value = m;
 }
 
 function renderList() {
@@ -208,7 +235,7 @@ function buildCard(r, i) {
     <div class="edit-panel" id="editPanel-${i}">
       <div class="form-row">
         <div class="field"><label>提醒日期</label><input type="date" id="editDate-${i}" value="${isoToDateInput(r.remind_at)}"></div>
-        <div class="field"><label>提醒時間</label><input type="time" id="editTime-${i}" value="${isoToTimeInput(r.remind_at)}" lang="en-GB"></div>
+        <div class="field"><label>提醒時間</label>${timeFieldHTML(`editTime-${i}`)}</div>
       </div>
       <div class="field" style="margin-bottom:10px">
         <label>提醒內容 *</label>
@@ -243,6 +270,7 @@ function closeAllPanels(exceptIdx = -1) {
 
 function bindCard(r, i) {
   const taskEnc = encodeURIComponent(r.task_name);
+  setTime(`editTime-${i}`, isoToTimeInput(r.remind_at));
 
   document.querySelector(`.edit-btn[data-i="${i}"]`).onclick = () => {
     closeAllPanels(i);
@@ -264,7 +292,7 @@ function bindCard(r, i) {
 
 async function submitEdit(i, taskName) {
   const dateVal = document.getElementById(`editDate-${i}`).value;
-  const timeVal = document.getElementById(`editTime-${i}`).value;
+  const timeVal = getTime(`editTime-${i}`);
   const text    = document.getElementById(`editText-${i}`).value.trim();
   const errEl   = document.getElementById(`errEdit-${i}`);
 
@@ -322,7 +350,7 @@ function bindAddForm() {
 
 async function submitAdd() {
   const dateVal = document.getElementById('addDate').value;
-  const timeVal = document.getElementById('addTime').value;
+  const timeVal = getTime('addTime');
   const text    = document.getElementById('addText').value.trim();
   const errEl   = document.getElementById('errAdd');
 
