@@ -118,7 +118,7 @@
   <div class="inline-form" id="addForm">
     <div class="form-row">
       <div class="field"><label>提醒日期</label><input type="date" id="addDate"></div>
-      <div class="field"><label>提醒時間</label><input type="time" id="addTime" value="09:00"></div>
+      <div class="field"><label>提醒時間</label><input type="time" id="addTime" value="09:00" lang="en-GB"></div>
     </div>
     <div class="field" style="margin-bottom:10px">
       <label>提醒內容 *</label>
@@ -208,7 +208,7 @@ function buildCard(r, i) {
     <div class="edit-panel" id="editPanel-${i}">
       <div class="form-row">
         <div class="field"><label>提醒日期</label><input type="date" id="editDate-${i}" value="${isoToDateInput(r.remind_at)}"></div>
-        <div class="field"><label>提醒時間</label><input type="time" id="editTime-${i}" value="${isoToTimeInput(r.remind_at)}"></div>
+        <div class="field"><label>提醒時間</label><input type="time" id="editTime-${i}" value="${isoToTimeInput(r.remind_at)}" lang="en-GB"></div>
       </div>
       <div class="field" style="margin-bottom:10px">
         <label>提醒內容 *</label>
