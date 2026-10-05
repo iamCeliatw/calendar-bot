@@ -456,6 +456,47 @@ def _create_reminder_task(
     return created.name
 
 
+def _delete_reminder_task(task_name: str) -> None:
+    if not (GCP_PROJECT_ID and REMINDER_TASK_QUEUE):
+        return
+    try:
+        tasks_v2.CloudTasksClient().delete_task(request={"name": task_name})
+    except Exception as e:
+        print(f"[WARN] 刪除 Cloud Task 失敗（可能會多推播一次）：{task_name} {e}")
+
+
+def _create_reminder(
+    user_id: str,
+    remind_at: datetime,
+    reminder_text: str,
+    *,
+    recurring: bool = False,
+    day_of_month: int | None = None,
+    remind_time: str | None = None,
+) -> dict:
+    """建立 Cloud Task 並寫入提醒清單；清單寫入失敗就刪掉剛建的 task，避免看不到的幽靈提醒。"""
+    task_name = _create_reminder_task(
+        user_id, remind_at, reminder_text,
+        recurring=recurring, day_of_month=day_of_month, remind_time=remind_time,
+    )
+    record = {
+        "task_name":     task_name,
+        "user_id":       user_id,
+        "remind_at":     remind_at.isoformat(),
+        "reminder_text": reminder_text,
+        "recurring":     recurring,
+    }
+    if recurring:
+        record["day_of_month"] = day_of_month
+        record["remind_time"] = remind_time
+    try:
+        reminder_store.append_reminder(record)
+    except Exception:
+        _delete_reminder_task(task_name)
+        raise
+    return record
+
+
 # ── 建立行程（抽出共用邏輯） ──────────────────────────────────────────────────
 
 def _do_create_event(pending: PendingEvent, reply_token: str) -> None:
@@ -912,22 +953,12 @@ def _on_postback(event: PostbackEvent):
         created, failed = [], []
         for item in items:
             try:
-                remind_at = _next_monthly_occurrence(bank["day"], remind_time, tz)
-                task_text = f"💳 {bank['name']} 卡費繳款提醒"
-                task_name = _create_reminder_task(
-                    uid, remind_at, task_text,
+                remind_at = _next_monthly_occurrence(item["day"], remind_time, tz)
+                _create_reminder(
+                    uid, remind_at, f"🔁 {item['name']} 每月提醒",
                     recurring=True, day_of_month=item["day"], remind_time=remind_time,
                 )
-                reminder_store.append_reminder({
-                    "task_name":     task_name,
-                    "user_id":       uid,
-                    "remind_at":     remind_at.isoformat(),
-                    "reminder_text": task_text,
-                    "recurring":     True,
-                    "day_of_month":  bank["day"],
-                    "remind_time":   remind_time,
-                })
-                created.append(bank)
+                created.append(item)
             except Exception as e:
                 failed.append((item["name"], str(e)))
         delete_session(uid)
@@ -984,18 +1015,11 @@ def _on_postback(event: PostbackEvent):
             return
 
         try:
-            task_name = _create_reminder_task(uid, remind_at, reminder_text)
+            task_name = _create_reminder(uid, remind_at, reminder_text)["task_name"]
         except Exception as e:
             _reply_text(reply_token, f"建立提醒失敗：{e}")
             return
 
-        reminder_store.append_reminder({
-            "task_name":     task_name,
-            "user_id":       uid,
-            "remind_at":     remind_at.isoformat(),
-            "reminder_text": reminder_text,
-            "recurring":     False,
-        })
         delete_session(uid)
         _reply_text(
             reply_token,
@@ -1220,17 +1244,9 @@ def api_reminders_create(liff_user_id: str):
     if remind_at <= now:
         return jsonify({"error": "remind_at must be in the future"}), 400
     try:
-        task_name = _create_reminder_task(liff_user_id, remind_at, reminder_text)
+        record = _create_reminder(liff_user_id, remind_at, reminder_text)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    record = {
-        "task_name":     task_name,
-        "user_id":       liff_user_id,
-        "remind_at":     remind_at.isoformat(),
-        "reminder_text": reminder_text,
-        "recurring":     False,
-    }
-    reminder_store.append_reminder(record)
     return jsonify(record), 201
 
 
@@ -1260,13 +1276,7 @@ def api_reminders_update(task_name_encoded: str, liff_user_id: str):
     if existing.get("user_id") != liff_user_id:
         return jsonify({"error": "Forbidden"}), 403
 
-    if GCP_PROJECT_ID and REMINDER_TASK_QUEUE:
-        try:
-            ct_client = tasks_v2.CloudTasksClient()
-            ct_client.delete_task(request={"name": task_name})
-        except Exception:
-            pass
-
+    # 先建新 task、寫好清單，最後才刪舊 task：中途失敗時舊提醒還在
     try:
         new_task_name = _create_reminder_task(liff_user_id, remind_at, reminder_text)
     except Exception as e:
@@ -1281,7 +1291,12 @@ def api_reminders_update(task_name_encoded: str, liff_user_id: str):
         "day_of_month":  existing.get("day_of_month"),
         "remind_time":   existing.get("remind_time"),
     }
-    reminder_store.update_reminder(task_name, new_record)
+    try:
+        reminder_store.update_reminder(task_name, new_record)
+    except Exception as e:
+        _delete_reminder_task(new_task_name)
+        return jsonify({"error": str(e)}), 500
+    _delete_reminder_task(task_name)
     return jsonify(new_record), 200
 
 
@@ -1293,13 +1308,7 @@ def api_reminders_delete(task_name_encoded: str, liff_user_id: str):
     if existing and existing.get("user_id") != liff_user_id:
         return jsonify({"error": "Forbidden"}), 403
 
-    if GCP_PROJECT_ID and REMINDER_TASK_QUEUE:
-        try:
-            ct_client = tasks_v2.CloudTasksClient()
-            ct_client.delete_task(request={"name": task_name})
-        except Exception:
-            pass
-
+    _delete_reminder_task(task_name)
     reminder_store.remove_reminder(task_name)
     return jsonify({"status": "cancelled"}), 200
 
@@ -1333,6 +1342,7 @@ def tasks_reminder():
         try:
             tz = ZoneInfo(TIMEZONE)
             next_dt = _next_month_from(remind_at, int(day_of_month), remind_time, tz)
+            # 不用 _create_reminder：清單寫入失敗時寧可留著 task，也不要讓每月提醒中斷
             new_task_name = _create_reminder_task(
                 user_id, next_dt, reminder_text,
                 recurring=True, day_of_month=int(day_of_month), remind_time=remind_time,
