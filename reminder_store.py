@@ -1,94 +1,55 @@
-import json
+"""提醒清單存在 Firestore（Cloud Run 容器的檔案系統是暫時的，重新部署就會消失）。
+
+文件 ID 用 Cloud Task 名稱的最後一段（完整名稱含 "/"，不能當文件 ID），
+剛好也等於 Cloud Tasks 呼叫時帶的 X-CloudTasks-TaskName header。
+"""
+
 import os
-import threading
-from contextlib import contextmanager
 from typing import Optional
 
-try:
-    import fcntl as _fcntl
-    _HAS_FCNTL = True
-except ImportError:
-    _HAS_FCNTL = False
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
-_REMINDERS_FILE = os.environ.get("REMINDERS_FILE", "data/reminders.json")
-_thread_lock = threading.Lock()
+_COLLECTION = os.environ.get("REMINDERS_COLLECTION", "reminders")
+_client: Optional[firestore.Client] = None
 
 
-def _path() -> str:
-    return os.environ.get("REMINDERS_FILE", _REMINDERS_FILE)
+def _db() -> firestore.Client:
+    # 延遲建立：沒有 GCP 憑證的本機環境也能正常 import 這個模組
+    global _client
+    if _client is None:
+        _client = firestore.Client(project=os.environ.get("GCP_PROJECT_ID") or None)
+    return _client
 
 
-def _load(f) -> list[dict]:
-    f.seek(0)
-    content = f.read()
-    if not content.strip():
-        return []
-    return json.loads(content)
+def _col():
+    return _db().collection(_COLLECTION)
 
 
-def _save(f, records: list[dict]) -> None:
-    f.seek(0)
-    f.truncate()
-    json.dump(records, f, ensure_ascii=False, indent=2)
-
-
-def _ensure_dir() -> None:
-    d = os.path.dirname(_path())
-    if d:
-        os.makedirs(d, exist_ok=True)
-
-
-@contextmanager
-def _locked_file(mode: str):
-    """Open file with thread lock; add flock on Linux."""
-    with _thread_lock:
-        _ensure_dir()
-        with open(_path(), mode, encoding="utf-8") as f:
-            if _HAS_FCNTL:
-                lock_type = _fcntl.LOCK_EX if "w" in mode or "a" in mode else _fcntl.LOCK_SH
-                _fcntl.flock(f, lock_type)
-            try:
-                yield f
-            finally:
-                if _HAS_FCNTL:
-                    _fcntl.flock(f, _fcntl.LOCK_UN)
+def _doc_id(task_name: str) -> str:
+    return task_name.rsplit("/", 1)[-1]
 
 
 def append_reminder(record: dict) -> None:
-    with _locked_file("a+") as f:
-        records = _load(f)
-        records.append(record)
-        _save(f, records)
+    _col().document(_doc_id(record["task_name"])).set(record)
 
 
 def remove_reminder(task_name: str) -> None:
-    with _locked_file("a+") as f:
-        records = _load(f)
-        records = [r for r in records if r.get("task_name") != task_name]
-        _save(f, records)
+    _col().document(_doc_id(task_name)).delete()
 
 
 def update_reminder(old_task_name: str, new_record: dict) -> None:
-    with _locked_file("a+") as f:
-        records = _load(f)
-        records = [r for r in records if r.get("task_name") != old_task_name]
-        records.append(new_record)
-        _save(f, records)
+    batch = _db().batch()
+    batch.delete(_col().document(_doc_id(old_task_name)))
+    batch.set(_col().document(_doc_id(new_record["task_name"])), new_record)
+    batch.commit()
 
 
 def get_reminder(task_name: str) -> Optional[dict]:
-    try:
-        with _locked_file("r") as f:
-            records = _load(f)
-    except FileNotFoundError:
-        return None
-    return next((r for r in records if r.get("task_name") == task_name), None)
+    snap = _col().document(_doc_id(task_name)).get()
+    return snap.to_dict() if snap.exists else None
 
 
 def list_reminders(user_id: str) -> list[dict]:
-    try:
-        with _locked_file("r") as f:
-            records = _load(f)
-    except FileNotFoundError:
-        return []
-    return [r for r in records if r.get("user_id") == user_id]
+    query = _col().where(filter=FieldFilter("user_id", "==", user_id))
+    return [snap.to_dict() for snap in query.stream()]

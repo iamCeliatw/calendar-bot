@@ -36,4 +36,5 @@ For production-like testing: `gunicorn --bind 0.0.0.0:8080 --workers 1 --threads
 
 - `webhook_app.py` will `raise SystemExit` if `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, or `LINE_USER_IDS` are missing/empty when run via `__main__`. Ensure `.env` has these values.
 - Session state is in-memory (10-minute TTL) — not persisted across restarts.
+- Reminder list (`reminder_store.py`) lives in Firestore collection `reminders`; needs GCP credentials and the `roles/datastore.user` role on the Cloud Run service account.
 - The `calendar_service.py` module blocks browser OAuth in CI/cloud environments (detects `K_SERVICE`, `GITHUB_ACTIONS`, `CI` env vars). Set `ALLOW_BROWSER_OAUTH=false` explicitly if needed.
