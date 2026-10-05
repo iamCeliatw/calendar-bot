@@ -1337,7 +1337,8 @@ def tasks_reminder():
                 user_id, next_dt, reminder_text,
                 recurring=True, day_of_month=int(day_of_month), remind_time=remind_time,
             )
-            old_task_name = payload.get("task_name", "")
+            # payload 裡沒有 task_name；Cloud Tasks 會在 header 帶上這個 task 的短 ID
+            old_task_name = payload.get("task_name") or request.headers.get("X-CloudTasks-TaskName", "")
             if old_task_name:
                 reminder_store.remove_reminder(old_task_name)
             reminder_store.append_reminder({
