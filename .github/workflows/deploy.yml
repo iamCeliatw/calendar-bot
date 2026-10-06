@@ -7,6 +7,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # 讓 job 能向 GitHub 要 OIDC token，換 GCP 短期憑證（Workload Identity Federation）
 
     steps:
       - name: Checkout code
@@ -15,7 +18,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/196656814832/locations/global/workloadIdentityPools/github/providers/calendar-bot
+          service_account: github-deployer@daring-feat-489102-s4.iam.gserviceaccount.com
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
