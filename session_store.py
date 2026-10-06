@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import threading
-from dataclasses import dataclass, field
+import os
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
+
+from google.cloud import firestore
 
 
 @dataclass
@@ -42,38 +44,72 @@ class PendingEvent:
     )
 
 
-class _SessionStore:
-    def __init__(self) -> None:
-        self._data: dict[str, PendingEvent] = {}
-        self._lock = threading.Lock()
-
-    def get(self, uid: str) -> Optional[PendingEvent]:
-        with self._lock:
-            p = self._data.get(uid)
-            if p and p.expires_at < datetime.now():
-                del self._data[uid]
-                return None
-            return p
-
-    def set(self, uid: str, pending: PendingEvent) -> None:
-        with self._lock:
-            self._data[uid] = pending
-
-    def delete(self, uid: str) -> None:
-        with self._lock:
-            self._data.pop(uid, None)
+# 精靈狀態存 Firestore：Cloud Run 有多個執行個體、重新部署或縮到 0 時，記憶體裡的狀態都會不見。
+# datetime 存成 ISO 字串，讀回來時區（+08:00 或 naive）才會跟存進去的一樣；
+# 另存一個 Timestamp 欄位 ttl 給 Firestore TTL policy 自動清掉過期文件。
+_COLLECTION = os.environ.get("SESSIONS_COLLECTION", "sessions")
+_DT_FIELDS = ("start", "end", "expires_at")
+_client: Optional[firestore.Client] = None
 
 
-_store = _SessionStore()
+def _col():
+    # 延遲建立：沒有 GCP 憑證的本機環境也能正常 import 這個模組
+    global _client
+    if _client is None:
+        _client = firestore.Client(project=os.environ.get("GCP_PROJECT_ID") or None)
+    return _client.collection(_COLLECTION)
+
+
+def _to_doc(pending: PendingEvent) -> dict:
+    doc = asdict(pending)
+    for k in _DT_FIELDS:
+        if doc[k] is not None:
+            doc[k] = doc[k].isoformat()
+    doc["ttl"] = pending.expires_at.astimezone()
+    return doc
+
+
+def _from_doc(doc: dict) -> PendingEvent:
+    doc.pop("ttl", None)
+    for k in _DT_FIELDS:
+        if doc.get(k) is not None:
+            doc[k] = datetime.fromisoformat(doc[k])
+    return PendingEvent(**doc)
 
 
 def get_session(uid: str) -> Optional[PendingEvent]:
-    return _store.get(uid)
+    snap = _col().document(uid).get()
+    if not snap.exists:
+        return None
+    p = _from_doc(snap.to_dict())
+    # ponytail: TTL policy 最晚可能 24 小時後才刪，過期判斷還是要自己做
+    if p.expires_at < datetime.now():
+        delete_session(uid)
+        return None
+    return p
 
 
 def set_session(uid: str, pending: PendingEvent) -> None:
-    _store.set(uid, pending)
+    _col().document(uid).set(_to_doc(pending))
 
 
 def delete_session(uid: str) -> None:
-    _store.delete(uid)
+    _col().document(uid).delete()
+
+
+if __name__ == "__main__":
+    # 不連 Firestore 的自我檢查：存進去再讀出來要一模一樣
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Asia/Taipei")
+    p = PendingEvent(
+        step="confirm",
+        start=datetime(2026, 10, 6, 9, 30, tzinfo=tz),
+        end=datetime(2026, 10, 6, 10, 30, tzinfo=tz),
+        monthly_items=[{"name": "房租", "day": 5}],
+    )
+    q = _from_doc(_to_doc(p))
+    assert q == p, (q, p)
+    assert q.start.utcoffset() == p.start.utcoffset()
+    assert _from_doc(_to_doc(PendingEvent(step="wizard_date"))).start is None
+    print("ok")
