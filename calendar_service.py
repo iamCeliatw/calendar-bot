@@ -80,7 +80,7 @@ def get_credentials():
 
 
 def _all_day_end(date_str: str) -> str:
-    """Google 全天事件的 end.date 是排他的：單日事件的結束日要是隔天。"""
+    """Google 全天事件的 end.date 是排他的：結束日（含）要轉成隔天。"""
     return (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
 
 
@@ -97,6 +97,9 @@ def _parse_event(event: dict, tz: ZoneInfo) -> dict:
             "summary": event.get("summary", "（無標題）"),
             "start_time": None,
             "end_time": None,
+            "date": start["date"],
+            # Google 的 end.date 是排他的，轉回含當天的結束日
+            "end_date": (date.fromisoformat(end["date"]) - timedelta(days=1)).isoformat(),
             "is_all_day": True,
             "location": event.get("location", ""),
             "description": event.get("description", ""),
@@ -169,9 +172,15 @@ def get_events_for_days(
     for raw in result.get("items", []):
         parsed = _parse_event(raw, tz)
         if parsed["is_all_day"]:
-            date_str = raw["start"].get("date", "")
-        else:
-            date_str = parsed["start_time"].strftime("%Y-%m-%d") if parsed["start_time"] else ""
+            # 跨天全天事件放進範圍內涵蓋的每一天
+            d = date.fromisoformat(parsed["date"])
+            last = date.fromisoformat(parsed["end_date"])
+            while d <= last:
+                if d.isoformat() in events_by_day:
+                    events_by_day[d.isoformat()].append(parsed)
+                d += timedelta(days=1)
+            continue
+        date_str = parsed["start_time"].strftime("%Y-%m-%d") if parsed["start_time"] else ""
         if date_str in events_by_day:
             events_by_day[date_str].append(parsed)
 
@@ -247,6 +256,7 @@ def update_event(
     location: str = "",
     is_all_day: bool = False,
     all_day_date: str = "",
+    all_day_end_date: str = "",
 ) -> dict:
     """更新行程（patch），回傳更新後事件 dict。"""
     creds = get_credentials()
@@ -259,7 +269,7 @@ def update_event(
     # 變成 date 與 dateTime 並存 → 400。互斥欄位一律顯式送 None 清掉。
     if is_all_day:
         body["start"] = {"date": all_day_date, "dateTime": None, "timeZone": None}
-        body["end"]   = {"date": _all_day_end(all_day_date), "dateTime": None, "timeZone": None}
+        body["end"]   = {"date": _all_day_end(all_day_end_date or all_day_date), "dateTime": None, "timeZone": None}
     else:
         tz = ZoneInfo(timezone_str)
         if start and start.tzinfo is None:
@@ -287,14 +297,15 @@ def create_all_day_event(
     date_str: str,
     timezone_str: str = "Asia/Taipei",
     location: str = "",
+    end_date_str: str = "",
 ) -> dict:
-    """在 primary 日曆建立全天事件。date_str 格式為 'YYYY-MM-DD'。"""
+    """在 primary 日曆建立全天事件。date_str / end_date_str（含當天，空字串＝單日）格式為 'YYYY-MM-DD'。"""
     creds = get_credentials()
     service = build("calendar", "v3", credentials=creds)
     body: dict = {
         "summary": summary,
         "start": {"date": date_str},
-        "end":   {"date": _all_day_end(date_str)},
+        "end":   {"date": _all_day_end(end_date_str or date_str)},
     }
     if location:
         body["location"] = location

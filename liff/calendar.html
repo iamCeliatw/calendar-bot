@@ -195,13 +195,25 @@ async function loadAndRender() {
   renderCalendar(eventsCache[cacheKey]);
 }
 
+// 行程涵蓋的日期（跨天全天事件展開成每一天）
+function eventDays(ev) {
+  if (ev.start) return [ev.start.slice(0,10)];
+  const days = [];
+  const d = new Date(ev.date + 'T00:00:00Z');
+  const last = ev.end_date || ev.date;
+  while (d.toISOString().slice(0,10) <= last) {
+    days.push(d.toISOString().slice(0,10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return days;
+}
+
 function renderCalendar(events) {
   const byDay = {};
-  events.forEach(ev => {
-    const d = ev.start ? ev.start.slice(0,10) : ev.date;
+  events.forEach(ev => eventDays(ev).forEach(d => {
     if (!byDay[d]) byDay[d] = [];
     byDay[d].push(ev);
-  });
+  }));
 
   const firstDay = new Date(currentYear, currentMonth - 1, 1).getDay();
   const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
@@ -244,10 +256,7 @@ function selectDay(dateStr) {
   if (cell) cell.classList.add('selected');
 
   const cacheKey = `${currentYear}-${String(currentMonth).padStart(2,'0')}`;
-  const events = (eventsCache[cacheKey] || []).filter(ev => {
-    const d = ev.start ? ev.start.slice(0,10) : ev.date;
-    return d === dateStr;
-  });
+  const events = (eventsCache[cacheKey] || []).filter(ev => eventDays(ev).includes(dateStr));
 
   const [y, m, d] = dateStr.split('-');
   const weekdays = ['日','一','二','三','四','五','六'];
