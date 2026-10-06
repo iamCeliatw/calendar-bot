@@ -18,6 +18,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, request, send_from_directory
 from google.cloud import tasks_v2
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from google.protobuf.timestamp_pb2 import Timestamp
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -42,6 +44,7 @@ import calendar_service
 import event_parser
 import line_service
 import reminder_store
+from main import notify as daily_notify
 from session_store import PendingEvent, get_session, set_session, delete_session
 
 load_dotenv()
@@ -57,6 +60,7 @@ GCP_LOCATION         = os.getenv("GCP_LOCATION", "asia-east1").strip()
 REMINDER_TASK_QUEUE  = os.getenv("REMINDER_TASK_QUEUE", "calendar-reminder-queue").strip()
 TASK_HANDLER_URL     = os.getenv("TASK_HANDLER_URL", "").strip()
 REMINDER_TASK_TOKEN  = os.getenv("REMINDER_TASK_TOKEN", "").strip()
+SCHEDULER_SA_EMAIL   = os.getenv("SCHEDULER_SA_EMAIL", "").strip()
 LIFF_CALENDAR_ID     = os.getenv("LIFF_CALENDAR_ID", "").strip()
 LIFF_FORM_ID         = os.getenv("LIFF_FORM_ID", "").strip()
 LIFF_REMINDER_ID     = os.getenv("LIFF_REMINDER_ID", "").strip()
@@ -1311,6 +1315,30 @@ def api_reminders_delete(task_name_encoded: str, liff_user_id: str):
     _delete_reminder_task(task_name)
     reminder_store.remove_reminder(task_name)
     return jsonify({"status": "cancelled"}), 200
+
+
+@app.route("/tasks/daily-notify", methods=["POST"])
+def tasks_daily_notify():
+    # 服務是公開的（LINE webhook 要打得到），所以自己驗 Cloud Scheduler 帶的 OIDC token：
+    # 簽章是 Google 的、audience 是這個網址、email 是指定的 Scheduler SA
+    if not SCHEDULER_SA_EMAIL:
+        return "SCHEDULER_SA_EMAIL 未設定", 503
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return "Unauthorized", 401
+    try:
+        claims = id_token.verify_oauth2_token(
+            auth.removeprefix("Bearer "),
+            google_requests.Request(),
+            audience=f"https://{request.host}/tasks/daily-notify",
+        )
+    except ValueError:
+        return "Unauthorized", 401
+    if claims.get("email") != SCHEDULER_SA_EMAIL or not claims.get("email_verified"):
+        return "Forbidden", 403
+
+    daily_notify()
+    return "OK", 200
 
 
 @app.route("/tasks/reminder", methods=["POST"])

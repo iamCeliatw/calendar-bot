@@ -1,9 +1,9 @@
 name: Calendar LINE Notification
 
+# 每日排程已搬到 Cloud Scheduler（呼叫 Cloud Run 的 /tasks/daily-notify）；
+# GitHub cron 實測每天晚 2～4 小時。這裡只留手動觸發當備援，確認 Scheduler 穩定後整個刪掉。
 on:
-  schedule:
-    - cron: '0 0 * * *'  # 每天 00:00 UTC = 08:00 台北時間
-  workflow_dispatch:       # 允許手動觸發（測試用）
+  workflow_dispatch:
 
 jobs:
   notify:
