@@ -135,7 +135,9 @@ def build_event_notification_flex(raw_event: dict, is_update: bool = False) -> F
     start = raw_event.get("start", {})
     end   = raw_event.get("end", {})
     if "date" in start:
-        time_str = f"{start['date']}（全天）"
+        from datetime import date as _d, timedelta as _td
+        last = (_d.fromisoformat(end["date"]) - _td(days=1)).isoformat() if end.get("date") else start["date"]
+        time_str = f"{start['date']}（全天）" if last == start["date"] else f"{start['date']} ～ {last}（全天）"
     else:
         dt_s = start.get("dateTime", "")
         dt_e = end.get("dateTime", "")

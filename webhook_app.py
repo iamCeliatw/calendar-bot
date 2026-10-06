@@ -1087,9 +1087,10 @@ def health():
 # ── LIFF JSON API ─────────────────────────────────────────────────────────────
 
 def _parse_event_body(data: dict, tz: ZoneInfo):
-    """從 LIFF 表單 body 解析行程欄位，回傳 (summary, start_dt, end_dt, is_all_day, date_str, location)。"""
+    """從 LIFF 表單 body 解析行程欄位，回傳 (summary, start_dt, end_dt, is_all_day, date_str, end_date_str, location)。"""
     summary    = str(data.get("summary", "")).strip()
     date_str   = str(data.get("date", "")).strip()
+    end_date_str = str(data.get("end_date", "")).strip()
     is_all_day = bool(data.get("is_all_day", False))
     location   = str(data.get("location", "")).strip()
     start_dt = end_dt = None
@@ -1101,7 +1102,7 @@ def _parse_event_body(data: dict, tz: ZoneInfo):
         eh, em   = map(int, et.split(":"))
         start_dt = datetime(y, mo, d, sh, sm, tzinfo=tz)
         end_dt   = datetime(y, mo, d, eh, em, tzinfo=tz)
-    return summary, start_dt, end_dt, is_all_day, date_str, location
+    return summary, start_dt, end_dt, is_all_day, date_str, end_date_str, location
 
 
 @app.route("/api/events", methods=["GET"])
@@ -1120,15 +1121,20 @@ def api_events_list(liff_user_id: str):
     end = datetime(year, month, last_day, 23, 59, 59, tzinfo=tz) + timedelta(seconds=1)
     events_by_day = calendar_service.get_events_for_days(start, end, TIMEZONE)
     result = []
+    seen = set()  # 跨天全天事件會出現在多天，只回一次
     for day_evs in events_by_day.values():
         for ev in day_evs:
+            if ev["event_id"] in seen:
+                continue
+            seen.add(ev["event_id"])
             result.append({
                 "event_id":   ev["event_id"],
                 "summary":    ev["summary"],
                 "start":      ev["start_time"].isoformat() if ev["start_time"] else None,
                 "end":        ev["end_time"].isoformat()   if ev["end_time"]   else None,
                 "is_all_day": ev["is_all_day"],
-                "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
+                "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else ev["date"],
+                "end_date":   ev.get("end_date"),
                 "location":   ev["location"],
                 "is_editable": ev["is_editable"],
             })
@@ -1149,7 +1155,8 @@ def api_event_get(event_id: str, liff_user_id: str):
         "start":      ev["start_time"].isoformat() if ev["start_time"] else None,
         "end":        ev["end_time"].isoformat()   if ev["end_time"]   else None,
         "is_all_day": ev["is_all_day"],
-        "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else None,
+        "date":       ev["start_time"].strftime("%Y-%m-%d") if ev["start_time"] else ev["date"],
+        "end_date":   ev.get("end_date"),
         "location":   ev["location"],
         "is_editable": ev["is_editable"],
     }), 200
@@ -1160,13 +1167,15 @@ def api_event_get(event_id: str, liff_user_id: str):
 def api_events_create(liff_user_id: str):
     data = request.get_json(silent=True) or {}
     tz   = ZoneInfo(TIMEZONE)
-    summary, start_dt, end_dt, is_all_day, date_str, location = _parse_event_body(data, tz)
+    summary, start_dt, end_dt, is_all_day, date_str, end_date_str, location = _parse_event_body(data, tz)
     if not summary or not date_str:
         return jsonify({"error": "missing required fields"}), 400
+    if end_date_str and end_date_str < date_str:
+        return jsonify({"error": "結束日期不可早於開始日期"}), 400
     summary = _prefixed(summary, liff_user_id)
     try:
         if is_all_day:
-            created = calendar_service.create_all_day_event(summary, date_str, TIMEZONE, location)
+            created = calendar_service.create_all_day_event(summary, date_str, TIMEZONE, location, end_date_str)
         else:
             created = calendar_service.create_timed_event(summary, start_dt, end_dt, TIMEZONE, location)
     except Exception as e:
@@ -1183,11 +1192,13 @@ def api_events_create(liff_user_id: str):
 def api_event_update(event_id: str, liff_user_id: str):
     data = request.get_json(silent=True) or {}
     tz   = ZoneInfo(TIMEZONE)
-    summary, start_dt, end_dt, is_all_day, date_str, location = _parse_event_body(data, tz)
+    summary, start_dt, end_dt, is_all_day, date_str, end_date_str, location = _parse_event_body(data, tz)
+    if end_date_str and end_date_str < date_str:
+        return jsonify({"error": "結束日期不可早於開始日期"}), 400
     try:
         updated = calendar_service.update_event(
             event_id, summary, start_dt, end_dt, TIMEZONE, location,
-            is_all_day=is_all_day, all_day_date=date_str,
+            is_all_day=is_all_day, all_day_date=date_str, all_day_end_date=end_date_str,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

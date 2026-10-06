@@ -104,6 +104,12 @@
     </div>
   </div>
 
+  <div class="field" id="endDateField" style="display:none">
+    <label>結束日期</label>
+    <input type="date" id="endDate">
+    <div class="err" id="errEndDate">結束日期不可早於開始日期</div>
+  </div>
+
   <div id="timeFields">
     <div class="time-row">
       <div class="field">
@@ -157,6 +163,7 @@ async function init() {
     const today = new Date().toISOString().slice(0, 10);
     document.getElementById('date').value =
       /^\d{4}-\d{2}-\d{2}$/.test(dateParam || '') ? dateParam : today;
+    syncEndDate();
 
     if (eventId) {
       document.getElementById('formTitle').textContent = '編輯行程';
@@ -191,9 +198,11 @@ async function loadEvent(id) {
 
     if (ev.is_all_day) {
       document.getElementById('date').value = ev.date || ev.start?.slice(0,10) || '';
+      document.getElementById('endDate').value = ev.end_date || ev.date || '';
       setAllDay(true);
     } else {
       document.getElementById('date').value = ev.start?.slice(0,10) || '';
+      syncEndDate();
       setTime('startTime', ev.start?.slice(11,16) || '09:00');
       setTime('endTime', ev.end?.slice(11,16) || '10:00');
     }
@@ -227,9 +236,18 @@ function setAllDay(val) {
   btn.classList.toggle('on', val);
   btn.setAttribute('aria-pressed', val);
   document.getElementById('timeFields').style.display = val ? 'none' : 'block';
+  document.getElementById('endDateField').style.display = val ? 'block' : 'none';
 }
 
 document.getElementById('allDayToggle').onclick = () => setAllDay(!isAllDay);
+
+// 開始日期往後調超過結束日期時，結束日期跟著推
+function syncEndDate() {
+  const start = document.getElementById('date').value;
+  const end = document.getElementById('endDate');
+  if (!end.value || end.value < start) end.value = start;
+}
+document.getElementById('date').addEventListener('change', syncEndDate);
 
 function syncEndTime() {
   const [h, m] = getTime('startTime').split(':').map(Number);
@@ -245,7 +263,11 @@ function validate() {
   } else {
     document.getElementById('errSummary').classList.remove('show');
   }
-  if (!isAllDay) {
+  if (isAllDay) {
+    const bad = document.getElementById('endDate').value < document.getElementById('date').value;
+    document.getElementById('errEndDate').classList.toggle('show', bad);
+    if (bad) ok = false;
+  } else {
     const s = getTime('startTime');
     const e = getTime('endTime');
     if (s >= e) {
@@ -268,7 +290,9 @@ document.getElementById('submitBtn').onclick = async () => {
     is_all_day: isAllDay,
     location: document.getElementById('location').value.trim(),
   };
-  if (!isAllDay) {
+  if (isAllDay) {
+    body.end_date = document.getElementById('endDate').value || date;
+  } else {
     body.start_time = getTime('startTime');
     body.end_time   = getTime('endTime');
   }
